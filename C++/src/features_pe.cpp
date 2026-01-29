@@ -352,10 +352,27 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
     features["exports_name_ratio"] = 0.0f;
   }
 
-  std::vector<std::string> section_names;
   std::vector<std::uint64_t> section_sizes;
   std::vector<std::uint64_t> section_vsizes;
   std::vector<double> section_entropies;
+  std::size_t section_count = 0;
+  std::unordered_set<std::string> uniq_sec;
+  std::array<bool, PACKER_SECTION_KEYWORDS.size()> packer_present{};
+  std::array<bool, COMMON_SECTIONS.size()> common_section_present{};
+  double total_chars = 0.0;
+  double special_chars = 0.0;
+  double name_len_sum = 0.0;
+  std::size_t name_len_count = 0;
+  std::size_t name_len_min = std::numeric_limits<std::size_t>::max();
+  std::size_t name_len_max = 0;
+  std::size_t long_sections_count = 0;
+  std::size_t short_sections_count = 0;
+  std::size_t upx_section_count = 0;
+  std::size_t compressed_section_count = 0;
+  bool has_mpress_section = false;
+  bool has_aspack_section = false;
+  bool has_themida_section = false;
+  std::size_t max_end = 0;
 
   std::uint64_t code_section_size = 0;
   std::uint64_t data_section_size = 0;
@@ -374,8 +391,9 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   std::uint32_t sect_align = bin.optional_header().section_alignment();
 
   for (const LIEF::PE::Section& section : bin.sections()) {
+    section_count++;
     std::string name = section.name();
-    section_names.push_back(name);
+    uniq_sec.insert(name);
     section_sizes.push_back(section.sizeof_raw_data());
     section_vsizes.push_back(section.virtual_size());
 
@@ -396,7 +414,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
     if (is_executable && is_writable) executable_writable_sections++;
     if (is_executable && is_writable && is_readable) rwx_sections_count++;
 
-    if (is_executable && common_exec.find(lower_ascii(name)) == common_exec.end()) {
+    std::string lower_name = lower_ascii(name);
+    if (is_executable && common_exec.find(lower_name) == common_exec.end()) {
       non_standard_executable_sections_count++;
     }
 
@@ -410,9 +429,43 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
 
     if (file_align != 0 && section.sizeof_raw_data() % file_align != 0) alignment_mismatch_count++;
     if (sect_align != 0 && section.virtual_size() % sect_align != 0) alignment_mismatch_count++;
+
+    if (!name.empty()) {
+      name_len_count++;
+      name_len_sum += static_cast<double>(name.size());
+      if (name.size() < name_len_min) name_len_min = name.size();
+      if (name.size() > name_len_max) name_len_max = name.size();
+    }
+    if (name.size() > 6) long_sections_count++;
+    if (name.size() < 3) short_sections_count++;
+
+    total_chars += static_cast<double>(name.size());
+    for (unsigned char c : name) {
+      if (!std::isalnum(c) && c != '_' && c != '.') {
+        special_chars += 1.0;
+      }
+    }
+
+    if (!lower_name.empty()) {
+      if (lower_name.find("upx") != std::string::npos) upx_section_count++;
+      if (lower_name.find("comp") != std::string::npos || lower_name.find("zip") != std::string::npos || lower_name.find("lz") != std::string::npos) compressed_section_count++;
+      if (lower_name.find("mpress") != std::string::npos) has_mpress_section = true;
+      if (lower_name.find("aspack") != std::string::npos) has_aspack_section = true;
+      if (lower_name.find("themida") != std::string::npos) has_themida_section = true;
+      for (std::size_t i = 0; i < PACKER_SECTION_KEYWORDS.size(); ++i) {
+        const char* kw = PACKER_SECTION_KEYWORDS[i];
+        if (kw && lower_name.find(kw) != std::string::npos) packer_present[i] = true;
+      }
+      for (std::size_t i = 0; i < COMMON_SECTIONS.size(); ++i) {
+        if (lower_name == COMMON_SECTIONS[i]) common_section_present[i] = true;
+      }
+    }
+
+    std::size_t end = static_cast<std::size_t>(section.pointerto_raw_data()) + static_cast<std::size_t>(section.sizeof_raw_data());
+    if (end > max_end) max_end = end;
   }
 
-  features["section_names_count"] = static_cast<float>(section_names.size());
+  features["section_names_count"] = static_cast<float>(section_count);
   features["section_total_size"] = static_cast<float>(std::accumulate(section_sizes.begin(), section_sizes.end(), 0ULL));
   features["section_total_vsize"] = static_cast<float>(std::accumulate(section_vsizes.begin(), section_vsizes.end(), 0ULL));
 
@@ -504,7 +557,7 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   features["non_standard_executable_sections_count"] = static_cast<float>(non_standard_executable_sections_count);
   features["executable_writable_sections"] = static_cast<float>(executable_writable_sections);
 
-  double sec_denom = static_cast<double>(section_names.size() + 1);
+  double sec_denom = static_cast<double>(section_count + 1);
   features["executable_sections_ratio"] = static_cast<float>(static_cast<double>(executable_sections_count) / sec_denom);
   features["writable_sections_ratio"] = static_cast<float>(static_cast<double>(writable_sections_count) / sec_denom);
   features["readable_sections_ratio"] = static_cast<float>(static_cast<double>(readable_sections_count) / sec_denom);
@@ -514,74 +567,39 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   features["executable_code_density"] = static_cast<float>(static_cast<double>(code_section_size) / static_cast<double>(file_size + 1));
 
   features["alignment_mismatch_count"] = static_cast<float>(alignment_mismatch_count);
-  features["alignment_mismatch_ratio"] = static_cast<float>(static_cast<double>(alignment_mismatch_count) / static_cast<double>(section_names.size() + 1));
+  features["alignment_mismatch_ratio"] = static_cast<float>(static_cast<double>(alignment_mismatch_count) / static_cast<double>(section_count + 1));
 
-  std::vector<std::size_t> name_lens;
-  for (const auto& n : section_names) if (!n.empty()) name_lens.push_back(n.size());
-  if (!name_lens.empty()) {
-    double avg = std::accumulate(name_lens.begin(), name_lens.end(), 0.0) / static_cast<double>(name_lens.size());
-    auto mm = std::minmax_element(name_lens.begin(), name_lens.end());
+  if (name_len_count > 0) {
+    double avg = name_len_sum / static_cast<double>(name_len_count);
     features["section_name_avg_length"] = static_cast<float>(avg);
-    features["section_name_max_length"] = static_cast<float>(*mm.second);
-    features["section_name_min_length"] = static_cast<float>(*mm.first);
+    features["section_name_max_length"] = static_cast<float>(name_len_max);
+    features["section_name_min_length"] = static_cast<float>(name_len_min);
   } else {
     features["section_name_avg_length"] = 0.0f;
     features["section_name_max_length"] = 0.0f;
     features["section_name_min_length"] = 0.0f;
   }
 
-  std::vector<std::string> lower_names;
-  lower_names.reserve(section_names.size());
-  for (const auto& n : section_names) {
-    lower_names.push_back(lower_ascii(n));
-  }
-
-  features["has_upx_section"] = std::any_of(lower_names.begin(), lower_names.end(), [](const std::string& n) { return n.find("upx") != std::string::npos; }) ? 1.0f : 0.0f;
-  features["has_mpress_section"] = std::any_of(lower_names.begin(), lower_names.end(), [](const std::string& n) { return n.find("mpress") != std::string::npos; }) ? 1.0f : 0.0f;
-  features["has_aspack_section"] = std::any_of(lower_names.begin(), lower_names.end(), [](const std::string& n) { return n.find("aspack") != std::string::npos; }) ? 1.0f : 0.0f;
-  features["has_themida_section"] = std::any_of(lower_names.begin(), lower_names.end(), [](const std::string& n) { return n.find("themida") != std::string::npos; }) ? 1.0f : 0.0f;
-
-  double total_chars = 0.0;
-  double special_chars = 0.0;
-  for (const auto& n : section_names) {
-    total_chars += static_cast<double>(n.size());
-    for (unsigned char c : n) {
-      if (!std::isalnum(c) && c != '_' && c != '.') {
-        special_chars += 1.0;
-      }
-    }
-  }
+  features["has_upx_section"] = upx_section_count > 0 ? 1.0f : 0.0f;
+  features["has_mpress_section"] = has_mpress_section ? 1.0f : 0.0f;
+  features["has_aspack_section"] = has_aspack_section ? 1.0f : 0.0f;
+  features["has_themida_section"] = has_themida_section ? 1.0f : 0.0f;
   features["special_char_ratio"] = static_cast<float>(special_chars / (total_chars + 1.0));
 
   std::size_t packer_hits = 0;
-  for (const char* kw : PACKER_SECTION_KEYWORDS) {
-    if (!kw) continue;
-    bool present = std::any_of(lower_names.begin(), lower_names.end(), [kw](const std::string& n) { return n.find(kw) != std::string::npos; });
+  for (bool present : packer_present) {
     if (present) packer_hits++;
   }
   features["packer_keyword_hits_count"] = static_cast<float>(packer_hits);
-  features["packer_keyword_hits_ratio"] = static_cast<float>(static_cast<double>(packer_hits) / static_cast<double>(section_names.size() + 1));
+  features["packer_keyword_hits_ratio"] = static_cast<float>(static_cast<double>(packer_hits) / static_cast<double>(section_count + 1));
 
-  std::unordered_set<std::string> uniq_sec(section_names.begin(), section_names.end());
   features["unique_sections_count"] = static_cast<float>(uniq_sec.size());
-  features["unique_sections_ratio"] = static_cast<float>(static_cast<double>(uniq_sec.size()) / static_cast<double>(section_names.size() + 1));
+  features["unique_sections_ratio"] = static_cast<float>(static_cast<double>(uniq_sec.size()) / static_cast<double>(section_count + 1));
 
-  std::size_t long_sections_count = 0;
-  std::size_t short_sections_count = 0;
-  for (const auto& n : section_names) {
-    if (n.size() > 6) long_sections_count++;
-    if (n.size() < 3) short_sections_count++;
-  }
   features["long_sections_count"] = static_cast<float>(long_sections_count);
   features["short_sections_count"] = static_cast<float>(short_sections_count);
-  features["long_sections_ratio"] = static_cast<float>(static_cast<double>(long_sections_count) / static_cast<double>(section_names.size() + 1));
-  features["short_sections_ratio"] = static_cast<float>(static_cast<double>(short_sections_count) / static_cast<double>(section_names.size() + 1));
-
-  std::size_t max_end = 0;
-  for (const LIEF::PE::Section& section : bin.sections()) {
-    std::size_t end = static_cast<std::size_t>(section.pointerto_raw_data()) + static_cast<std::size_t>(section.sizeof_raw_data());
-    if (end > max_end) max_end = end;
-  }
+  features["long_sections_ratio"] = static_cast<float>(static_cast<double>(long_sections_count) / static_cast<double>(section_count + 1));
+  features["short_sections_ratio"] = static_cast<float>(static_cast<double>(short_sections_count) / static_cast<double>(section_count + 1));
   std::size_t trailing_data_size = 0;
   if (file_size > max_end) trailing_data_size = static_cast<std::size_t>(file_size - max_end);
   features["trailing_data_size"] = static_cast<float>(trailing_data_size);
@@ -700,13 +718,6 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   features["file_version_len"] = 0.0f;
   features["original_filename_len"] = 0.0f;
 
-  std::size_t upx_section_count = 0;
-  std::size_t compressed_section_count = 0;
-  for (const auto& n : section_names) {
-    std::string nl = lower_ascii(n);
-    if (nl.find("upx") != std::string::npos) upx_section_count++;
-    if (nl.find("comp") != std::string::npos || nl.find("zip") != std::string::npos || nl.find("lz") != std::string::npos) compressed_section_count++;
-  }
   features["has_upx_section"] = upx_section_count > 0 ? 1.0f : 0.0f;
   features["upx_section_count"] = static_cast<float>(upx_section_count);
   features["has_compressed_section"] = compressed_section_count > 0 ? 1.0f : 0.0f;
@@ -723,16 +734,10 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   }
   features["timestamp_year"] = static_cast<float>(year);
 
-  for (const char* sec : COMMON_SECTIONS) {
+  for (std::size_t i = 0; i < COMMON_SECTIONS.size(); ++i) {
+    const char* sec = COMMON_SECTIONS[i];
     std::string k = std::string("has_") + sec + "_section";
-    bool present = false;
-    for (const auto& n : section_names) {
-      if (lower_ascii(n) == sec) {
-        present = true;
-        break;
-      }
-    }
-    features[k] = present ? 1.0f : 0.0f;
+    features[k] = common_section_present[i] ? 1.0f : 0.0f;
   }
 
   return features;

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <unordered_map>
 
@@ -14,6 +15,10 @@
 struct kvd_handle {
   kvd::Config config;
   std::shared_ptr<int> token;
+  std::shared_ptr<kvd::LightGbmModel> model;
+  std::shared_ptr<kvd::LightGbmModel> model_normal;
+  std::shared_ptr<kvd::LightGbmModel> model_packed;
+  std::shared_ptr<kvd::FamilyClassifier> family_classifier;
 };
 
 static nlohmann::json to_json(const kvd::ScanResult& r) {
@@ -46,16 +51,23 @@ kvd_handle* kvd_create(const kvd_config* config) {
       config->max_file_size,
       config->prediction_threshold);
 
-  auto scanner_opt = kvd::MalwareScanner::create(cfg);
-  if (!scanner_opt) {
+  auto model = get_shared_model(cfg.model_path);
+  if (!model) {
     return nullptr;
   }
+  auto model_normal = get_shared_model(cfg.model_normal_path);
+  auto model_packed = get_shared_model(cfg.model_packed_path);
+  auto family_classifier = get_shared_family_classifier(cfg.family_classifier_json_path);
   kvd_handle* h = new (std::nothrow) kvd_handle{};
   if (!h) {
     return nullptr;
   }
   h->config = std::move(cfg);
   h->token = std::make_shared<int>(1);
+  h->model = std::move(model);
+  h->model_normal = std::move(model_normal);
+  h->model_packed = std::move(model_packed);
+  h->family_classifier = std::move(family_classifier);
   return h;
 }
 
@@ -99,6 +111,52 @@ static bool path_exists(const std::string& path) {
   return !path.empty() && std::filesystem::exists(std::filesystem::path(path), ec) && !ec;
 }
 
+static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& path) {
+  if (path.empty()) {
+    return {};
+  }
+  static std::mutex mu;
+  static std::unordered_map<std::string, std::weak_ptr<kvd::LightGbmModel>> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  auto it = cache.find(path);
+  if (it != cache.end()) {
+    auto sp = it->second.lock();
+    if (sp) {
+      return sp;
+    }
+  }
+  auto model_opt = kvd::LightGbmModel::load_from_file(path);
+  if (!model_opt) {
+    return {};
+  }
+  auto sp = std::make_shared<kvd::LightGbmModel>(std::move(*model_opt));
+  cache[path] = sp;
+  return sp;
+}
+
+static std::shared_ptr<kvd::FamilyClassifier> get_shared_family_classifier(const std::string& path) {
+  if (path.empty()) {
+    return {};
+  }
+  static std::mutex mu;
+  static std::unordered_map<std::string, std::weak_ptr<kvd::FamilyClassifier>> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  auto it = cache.find(path);
+  if (it != cache.end()) {
+    auto sp = it->second.lock();
+    if (sp) {
+      return sp;
+    }
+  }
+  auto fc_opt = kvd::FamilyClassifier::load_from_json(path);
+  if (!fc_opt) {
+    return {};
+  }
+  auto sp = std::make_shared<kvd::FamilyClassifier>(std::move(*fc_opt));
+  cache[path] = sp;
+  return sp;
+}
+
 struct TokenHash {
   std::size_t operator()(const std::shared_ptr<int>& p) const noexcept {
     return std::hash<int*>()(p.get());
@@ -120,7 +178,12 @@ static kvd::MalwareScanner* get_thread_scanner(kvd_handle* handle) {
   if (it != cache.end()) {
     return it->second.get();
   }
-  auto scanner_opt = kvd::MalwareScanner::create(handle->config);
+  auto scanner_opt = kvd::MalwareScanner::create_shared(
+      handle->config,
+      handle->model,
+      handle->model_normal,
+      handle->model_packed,
+      handle->family_classifier);
   if (!scanner_opt) {
     return nullptr;
   }
@@ -153,6 +216,34 @@ int kvd_scan_bytes(kvd_handle* handle, const unsigned char* bytes, size_t len, c
   }
   kvd::ScanResult r = scanner->scan_bytes(v);
   return write_json_out(to_json(r), out_json, out_len);
+}
+
+int kvd_scan_paths(kvd_handle* handle, const char** paths, size_t count, char** out_json, size_t* out_len) {
+  if (!handle) {
+    return -1;
+  }
+  if (!paths && count > 0) {
+    return -1;
+  }
+  std::vector<std::string> v;
+  v.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    if (paths && paths[i]) {
+      v.emplace_back(paths[i]);
+    } else {
+      v.emplace_back();
+    }
+  }
+  auto scanner = get_thread_scanner(handle);
+  if (!scanner) {
+    return -1;
+  }
+  auto results = scanner->scan_paths(v);
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& r : results) {
+    arr.push_back(to_json(r));
+  }
+  return write_json_out(arr, out_json, out_len);
 }
 
 void kvd_free(char* p) {

@@ -81,7 +81,7 @@ void kvd_destroy(kvd_handle* handle);
 - 用途：销毁句柄，释放模型与相关资源。
 - 约束：允许传 `NULL`（等同于 no-op）是常见做法，但当前实现直接 `delete`，建议调用前自行判空。
 - 多线程：同一 `kvd_handle` 可被多线程并行调用；每个线程会懒加载并缓存自己的扫描器实例，不会互相阻塞。
-- 资源占用：每个线程首次调用会加载一份模型与分类器，线程数越多内存占用越高；线程退出时缓存才会释放。
+- 资源占用：模型与家族分类器按路径共享且只读复用，不随线程数线性增长；每线程仍会缓存一个轻量扫描器实例，线程退出时缓存释放。
 
 ### 函数：kvd_scan_path
 
@@ -117,6 +117,49 @@ int kvd_scan_bytes(kvd_handle* handle, const unsigned char* bytes, size_t len, c
 - 用途：扫描内存缓冲区（当前实现会返回 JSON，`error` 为 `scan_bytes_not_implemented`）。
 - 返回值/释放规则：同 `kvd_scan_path`。
 - 多线程：可并行调用；同一 `kvd_handle` 在不同线程会使用不同的内部实例。
+
+### 函数：kvd_scan_paths
+
+```c
+int kvd_scan_paths(kvd_handle* handle, const char** paths, size_t count, char** out_json, size_t* out_len);
+```
+
+- 用途：批量扫描文件路径，输出 JSON 数组字符串。
+- 参数：
+  - `handle`：由 `kvd_create` 创建
+  - `paths/count`：路径数组与数量，`paths` 可为 `NULL` 且 `count` 必须为 0
+  - `out_json/out_len`：输出 JSON 与长度（字节数）
+- 返回值：
+  - `0`：成功（每个条目独立包含 `error` 字段）
+  - `<0`：调用层错误
+- 内存释放：成功时 `*out_json` 必须用 `kvd_free(*out_json)` 释放。
+- 多线程：可并行调用；同一 `kvd_handle` 在不同线程会使用不同的内部实例。
+
+JSON 输出示例（数组）：
+
+```json
+[
+  {"is_malware":false,"confidence":0.12},
+  {"is_malware":true,"confidence":0.97,"malware_family":{"family_name":"xxx","cluster_id":12,"is_new_family":false}}
+]
+```
+
+最小调用示例：
+
+```cpp
+kvd_config cfg{};
+kvd_handle* h = kvd_create(&cfg);
+const char* paths[] = { "a.exe", "b.exe", "c.exe" };
+char* out_json = nullptr;
+size_t out_len = 0;
+int rc = kvd_scan_paths(h, paths, 3, &out_json, &out_len);
+if (rc == 0 && out_json) {
+  std::cout.write(out_json, static_cast<std::streamsize>(out_len));
+  std::cout << "\n";
+  kvd_free(out_json);
+}
+kvd_destroy(h);
+```
 
 ### 函数：kvd_free
 

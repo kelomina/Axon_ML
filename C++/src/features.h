@@ -2,6 +2,7 @@
 
 #include "kvd_internal.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -10,9 +11,23 @@
 
 namespace kvd {
 
+struct ByteSequenceStats {
+  std::array<std::uint32_t, 256> hist{};
+  double mean = 0.0;
+  double m2 = 0.0;
+  std::uint8_t min_val = 0;
+  std::uint8_t max_val = 0;
+  int count_0 = 0;
+  int count_255 = 0;
+  int count_90 = 0;
+  int count_printable = 0;
+  bool has_data = false;
+};
+
 struct ByteSequenceResult {
   std::vector<std::uint8_t> padded_sequence;
   std::size_t original_length = 0;
+  ByteSequenceStats stats;
 };
 
 std::optional<ByteSequenceResult> extract_byte_sequence_from_path(

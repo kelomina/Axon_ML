@@ -2,7 +2,41 @@
 
 #include "util_filesystem.h"
 
+#include <algorithm>
+#include <fstream>
+
 namespace kvd {
+
+static ByteSequenceStats compute_stats(const std::vector<std::uint8_t>& data, std::size_t n) {
+  ByteSequenceStats s;
+  s.hist.fill(0);
+  if (n == 0) {
+    return s;
+  }
+  s.has_data = true;
+  s.min_val = data[0];
+  s.max_val = data[0];
+  double mean = 0.0;
+  double m2 = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    std::uint8_t b = data[i];
+    double x = static_cast<double>(b);
+    double delta = x - mean;
+    mean += delta / static_cast<double>(i + 1);
+    double delta2 = x - mean;
+    m2 += delta * delta2;
+    if (b < s.min_val) s.min_val = b;
+    if (b > s.max_val) s.max_val = b;
+    if (b == 0) s.count_0++;
+    if (b == 255) s.count_255++;
+    if (b == 0x90) s.count_90++;
+    if (b >= 32 && b <= 126) s.count_printable++;
+    s.hist[b]++;
+  }
+  s.mean = mean;
+  s.m2 = m2;
+  return s;
+}
 
 std::optional<ByteSequenceResult> extract_byte_sequence_from_path(
     const std::string& path,
@@ -16,18 +50,26 @@ std::optional<ByteSequenceResult> extract_byte_sequence_from_path(
   if (max_file_size <= offset) {
     return std::nullopt;
   }
-  std::vector<std::uint8_t> raw;
-  if (!read_file_bytes_seek(*valid, offset, max_file_size - offset, raw)) {
-    return std::nullopt;
-  }
   ByteSequenceResult r;
-  r.original_length = raw.size();
   r.padded_sequence.assign(max_file_size, 0);
-  if (!raw.empty()) {
-    std::size_t copy_n = raw.size();
-    if (copy_n > max_file_size) copy_n = max_file_size;
-    std::copy(raw.begin(), raw.begin() + static_cast<std::ptrdiff_t>(copy_n), r.padded_sequence.begin());
+  {
+    std::ifstream f(*valid, std::ios::binary);
+    if (!f) {
+      return std::nullopt;
+    }
+    f.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!f) {
+      return std::nullopt;
+    }
+    std::size_t want = max_file_size - offset;
+    f.read(reinterpret_cast<char*>(r.padded_sequence.data()), static_cast<std::streamsize>(want));
+    std::streamsize read_n = f.gcount();
+    if (read_n < 0) {
+      return std::nullopt;
+    }
+    r.original_length = static_cast<std::size_t>(read_n);
   }
+  r.stats = compute_stats(r.padded_sequence, r.original_length);
   return r;
 }
 
@@ -46,6 +88,7 @@ std::optional<ByteSequenceResult> extract_byte_sequence_from_bytes(
     ByteSequenceResult r;
     r.original_length = 0;
     r.padded_sequence.assign(max_file_size, 0);
+    r.stats = compute_stats(r.padded_sequence, r.original_length);
     return r;
   }
   std::size_t avail = len - offset;
@@ -58,6 +101,7 @@ std::optional<ByteSequenceResult> extract_byte_sequence_from_bytes(
   if (take > 0) {
     std::copy(bytes + offset, bytes + offset + take, r.padded_sequence.begin());
   }
+  r.stats = compute_stats(r.padded_sequence, r.original_length);
   return r;
 }
 

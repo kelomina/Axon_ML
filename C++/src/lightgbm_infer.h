@@ -19,6 +19,7 @@ class LightGbmModel {
   static std::optional<LightGbmModel> load_from_file(const std::string& path);
 
   std::optional<float> predict_one(const std::vector<float>& features) const;
+  std::optional<std::vector<float>> predict_batch(const std::vector<float>& features, std::size_t row_count, std::size_t num_features) const;
 
   bool ok() const;
 

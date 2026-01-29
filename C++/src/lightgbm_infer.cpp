@@ -72,6 +72,44 @@ std::optional<float> LightGbmModel::predict_one(const std::vector<float>& featur
   return static_cast<float>(out);
 }
 
+std::optional<std::vector<float>> LightGbmModel::predict_batch(const std::vector<float>& features, std::size_t row_count, std::size_t num_features) const {
+  if (!handle_) {
+    return std::nullopt;
+  }
+  if (row_count == 0 || num_features == 0) {
+    return std::nullopt;
+  }
+  if (features.size() != row_count * num_features) {
+    return std::nullopt;
+  }
+  std::vector<double> out(row_count);
+  int64_t out_len = 0;
+  if (LGBM_BoosterPredictForMat(
+          handle_,
+          features.data(),
+          C_API_DTYPE_FLOAT32,
+          static_cast<int>(row_count),
+          static_cast<int>(num_features),
+          1,
+          C_API_PREDICT_NORMAL,
+          0,
+          -1,
+          "",
+          &out_len,
+          out.data()) != 0) {
+    return std::nullopt;
+  }
+  if (out_len < static_cast<int64_t>(row_count)) {
+    return std::nullopt;
+  }
+  std::vector<float> res;
+  res.reserve(row_count);
+  for (std::size_t i = 0; i < row_count; ++i) {
+    res.push_back(static_cast<float>(out[i]));
+  }
+  return res;
+}
+
 bool LightGbmModel::ok() const {
   return handle_ != nullptr;
 }

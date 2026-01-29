@@ -54,6 +54,7 @@ KVD_API void KVD_CALL kvd_destroy(kvd_handle* handle);
 
 KVD_API int KVD_CALL kvd_scan_path(kvd_handle* handle, const char* path, char** out_json, size_t* out_len);
 KVD_API int KVD_CALL kvd_scan_bytes(kvd_handle* handle, const unsigned char* bytes, size_t len, char** out_json, size_t* out_len);
+KVD_API int KVD_CALL kvd_scan_paths(kvd_handle* handle, const char** paths, size_t count, char** out_json, size_t* out_len);
 KVD_API void KVD_CALL kvd_free(char* p);
 KVD_API int KVD_CALL kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len);
 

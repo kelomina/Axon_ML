@@ -4,5 +4,6 @@ EXPORTS
   kvd_destroy
   kvd_scan_path
   kvd_scan_bytes
+  kvd_scan_paths
   kvd_free
   kvd_validate_models
