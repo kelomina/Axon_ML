@@ -159,7 +159,13 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   std::unordered_map<std::string, float> features;
 
   std::error_code ec;
-  std::uintmax_t file_size = std::filesystem::file_size(std::filesystem::path(valid_path), ec);
+  std::uintmax_t file_size = 0;
+  auto fs_path = to_filesystem_path(valid_path);
+  if (fs_path) {
+    file_size = std::filesystem::file_size(*fs_path, ec);
+  } else {
+    ec = std::make_error_code(std::errc::invalid_argument);
+  }
   if (ec) file_size = 0;
 
   features["sections_count"] = static_cast<float>(range_count(bin.sections()));
@@ -784,9 +790,13 @@ std::vector<float> extract_combined_pe_features_from_path(
     return {};
   }
 
+  std::vector<std::uint8_t> data;
+  if (!read_file_bytes(*valid, data)) {
+    return {};
+  }
   std::unique_ptr<LIEF::PE::Binary> bin;
   try {
-    bin = LIEF::PE::Parser::parse(*valid);
+    bin = LIEF::PE::Parser::parse(std::move(data));
   } catch (...) {
     return {};
   }
@@ -879,6 +889,47 @@ std::optional<std::size_t> pe_feature_index(const std::string& name) {
   auto it = index_map.find(name);
   if (it == index_map.end()) return std::nullopt;
   return it->second;
+}
+
+std::optional<std::vector<std::string>> extract_import_sequence_from_path(
+    const std::string& path,
+    const std::optional<std::string>& allowed_root) {
+  auto valid = validate_path(path, allowed_root);
+  if (!valid) {
+    return std::nullopt;
+  }
+
+  std::vector<std::uint8_t> data;
+  if (!read_file_bytes(*valid, data)) {
+    return std::nullopt;
+  }
+  std::unique_ptr<LIEF::PE::Binary> bin;
+  try {
+    bin = LIEF::PE::Parser::parse(std::move(data));
+  } catch (...) {
+    return std::nullopt;
+  }
+  if (!bin) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> seq;
+  if (!bin->has_imports()) {
+    return seq;
+  }
+  for (const LIEF::PE::Import& imp : bin->imports()) {
+    std::string dll = lower_ascii(imp.name());
+    for (const LIEF::PE::ImportEntry& e : imp.entries()) {
+      if (e.name().empty()) continue;
+      std::string api = lower_ascii(e.name());
+      if (dll.empty()) {
+        seq.emplace_back(api);
+      } else {
+        seq.emplace_back(dll + "!" + api);
+      }
+    }
+  }
+  return seq;
 }
 
 }

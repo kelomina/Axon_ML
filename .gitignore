@@ -216,3 +216,4 @@ tests
 scan_results
 reports/
 .trae
+vcpkg_installed

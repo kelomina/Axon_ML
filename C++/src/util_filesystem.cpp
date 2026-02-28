@@ -5,11 +5,29 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <windows.h>
 
 namespace kvd {
 
 static bool contains_nul(const std::string& s) {
   return std::find(s.begin(), s.end(), '\0') != s.end();
+}
+
+static std::optional<std::wstring> utf8_to_wide(const std::string& s) {
+  if (s.empty()) {
+    return std::wstring();
+  }
+  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  if (len <= 0) {
+    return std::nullopt;
+  }
+  std::wstring w;
+  w.resize(static_cast<std::size_t>(len));
+  int ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), w.data(), len);
+  if (ok != len) {
+    return std::nullopt;
+  }
+  return w;
 }
 
 static std::wstring to_lower(std::wstring s) {
@@ -19,12 +37,24 @@ static std::wstring to_lower(std::wstring s) {
   return s;
 }
 
-std::optional<std::string> validate_path(const std::string& path, const std::optional<std::string>& allowed_root) {
+std::optional<std::filesystem::path> to_filesystem_path(const std::string& path) {
   if (path.empty() || contains_nul(path)) {
     return std::nullopt;
   }
+  auto w = utf8_to_wide(path);
+  if (!w) {
+    return std::nullopt;
+  }
+  return std::filesystem::path(*w);
+}
+
+std::optional<std::string> validate_path(const std::string& path, const std::optional<std::string>& allowed_root) {
+  auto p_opt = to_filesystem_path(path);
+  if (!p_opt) {
+    return std::nullopt;
+  }
   std::error_code ec;
-  std::filesystem::path p = std::filesystem::absolute(std::filesystem::path(path), ec);
+  std::filesystem::path p = std::filesystem::absolute(*p_opt, ec);
   if (ec) {
     return std::nullopt;
   }
@@ -36,7 +66,11 @@ std::optional<std::string> validate_path(const std::string& path, const std::opt
     return std::nullopt;
   }
   if (allowed_root) {
-    std::filesystem::path root = std::filesystem::absolute(std::filesystem::path(*allowed_root), ec);
+    auto root_opt = to_filesystem_path(*allowed_root);
+    if (!root_opt) {
+      return std::nullopt;
+    }
+    std::filesystem::path root = std::filesystem::absolute(*root_opt, ec);
     if (ec) {
       return std::nullopt;
     }
@@ -69,7 +103,11 @@ std::optional<std::string> validate_path(const std::string& path, const std::opt
 
 bool read_file_bytes(const std::string& path, std::vector<std::uint8_t>& out) {
   out.clear();
-  std::ifstream f(path, std::ios::binary);
+  auto p = to_filesystem_path(path);
+  if (!p) {
+    return false;
+  }
+  std::ifstream f(*p, std::ios::binary);
   if (!f) {
     return false;
   }
@@ -92,7 +130,11 @@ bool read_file_bytes(const std::string& path, std::vector<std::uint8_t>& out) {
 
 bool read_file_bytes_seek(const std::string& path, std::size_t offset, std::size_t max_count, std::vector<std::uint8_t>& out) {
   out.clear();
-  std::ifstream f(path, std::ios::binary);
+  auto p = to_filesystem_path(path);
+  if (!p) {
+    return false;
+  }
+  std::ifstream f(*p, std::ios::binary);
   if (!f) {
     return false;
   }

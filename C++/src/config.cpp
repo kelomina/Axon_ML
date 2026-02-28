@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <filesystem>
 
+#include "util_filesystem.h"
+
 namespace kvd {
 
 static constexpr const char* ENV_LIGHTGBM_MODEL_PATH = "SCANNER_LIGHTGBM_MODEL_PATH";
@@ -22,8 +24,13 @@ std::optional<std::string> getenv_string(const char* name) {
 }
 
 static bool path_exists(const std::string& path) {
+  if (path.empty()) return false;
   std::error_code ec;
-  return !path.empty() && std::filesystem::exists(std::filesystem::path(path), ec) && !ec;
+  auto fs_path = to_filesystem_path(path);
+  if (!fs_path) {
+    return false;
+  }
+  return std::filesystem::exists(*fs_path, ec) && !ec;
 }
 
 static std::optional<std::size_t> parse_size_t(const std::string& s) {

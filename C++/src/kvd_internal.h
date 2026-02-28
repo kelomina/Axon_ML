@@ -28,7 +28,12 @@ struct ScanResultFamily {
 struct ScanResult {
   bool is_malware = false;
   float confidence = 0.0f;
+  bool axon_malware = false;
+  float axon_score = 0.0f;
   std::optional<ScanResultFamily> family;
+  bool signature_hit = false;
+  float signature_score = 0.0f;
+  std::string signature_reason;
   std::string error;
 };
 

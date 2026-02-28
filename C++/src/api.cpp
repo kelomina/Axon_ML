@@ -2,15 +2,28 @@
 
 #include "config.h"
 #include "malware_scanner.h"
+#include "util_filesystem.h"
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <atomic>
+#include <thread>
 #include <unordered_map>
+#include <windows.h>
 
 #include <nlohmann/json.hpp>
+
+#if defined(KVD_BUILD_SIGNATURE_ENGINE) && !defined(KVD_BUILD_AXON_ENGINE)
+#define KVD_SIGNATURE_ONLY 1
+#endif
+
+#if defined(KVD_BUILD_AXON_ENGINE) && !defined(KVD_BUILD_SIGNATURE_ENGINE)
+#define KVD_AXON_ONLY 1
+#endif
 
 struct kvd_handle {
   kvd::Config config;
@@ -21,10 +34,77 @@ struct kvd_handle {
   std::shared_ptr<kvd::FamilyClassifier> family_classifier;
 };
 
+static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& path);
+static std::shared_ptr<kvd::FamilyClassifier> get_shared_family_classifier(const std::string& path);
+
+static std::string kvd_temp_dir() {
+  std::error_code ec;
+  std::filesystem::path p = std::filesystem::temp_directory_path(ec);
+  if (ec) {
+    return std::string(".");
+  }
+  auto u8 = p.u8string();
+  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+static std::string kvd_log_path() {
+  std::filesystem::path base;
+  auto temp = kvd_temp_dir();
+  auto base_opt = kvd::to_filesystem_path(temp);
+  if (base_opt) {
+    base = *base_opt;
+  } else {
+    std::error_code ec;
+    base = std::filesystem::temp_directory_path(ec);
+    if (ec) base = std::filesystem::path(".");
+  }
+  std::filesystem::path p = base / "anxin_logs" / "crash";
+  std::error_code ec;
+  std::filesystem::create_directories(p, ec);
+  auto u8 = (p / "kvd_native.log").u8string();
+  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+static void kvd_log_line(const std::string& line) {
+  try {
+    auto p = kvd::to_filesystem_path(kvd_log_path());
+    if (!p) return;
+    std::ofstream out(*p, std::ios::out | std::ios::app);
+    out << line << "\n";
+  } catch (...) {
+  }
+}
+
+static void kvd_log_event(const std::string& tag, const std::string& detail) {
+  std::string msg = "{\"tag\":\"" + tag + "\",\"detail\":\"" + detail + "\"}";
+  kvd_log_line(msg);
+}
+
+static std::string kvd_basename(const char* p) {
+  if (!p) return {};
+  try {
+    auto fs_path = kvd::to_filesystem_path(std::string(p));
+    if (!fs_path) {
+      return {};
+    }
+    auto name = fs_path->filename().u8string();
+    return std::string(reinterpret_cast<const char*>(name.data()), name.size());
+  } catch (...) {
+    return {};
+  }
+}
+
 static nlohmann::json to_json(const kvd::ScanResult& r) {
   nlohmann::json j;
   j["is_malware"] = r.is_malware;
   j["confidence"] = r.confidence;
+  j["axon_malware"] = r.axon_malware;
+  j["axon_score"] = r.axon_score;
+  j["signature_hit"] = r.signature_hit;
+  j["signature_score"] = r.signature_score;
+  if (!r.signature_reason.empty()) {
+    j["signature_reason"] = r.signature_reason;
+  }
   if (!r.error.empty()) {
     j["error"] = r.error;
   }
@@ -39,40 +119,67 @@ static nlohmann::json to_json(const kvd::ScanResult& r) {
 }
 
 kvd_handle* kvd_create(const kvd_config* config) {
-  if (!config) {
-    return nullptr;
-  }
-  kvd::Config cfg = kvd::config_from_api(
-      config->model_path,
-      config->model_normal_path,
-      config->model_packed_path,
-      config->family_classifier_json_path,
-      config->allowed_scan_root,
-      config->max_file_size,
-      config->prediction_threshold);
+  try {
+    if (!config) {
+      return nullptr;
+    }
+    kvd::Config cfg = kvd::config_from_api(
+        config->model_path,
+        config->model_normal_path,
+        config->model_packed_path,
+        config->family_classifier_json_path,
+        config->allowed_scan_root,
+        config->max_file_size,
+        config->prediction_threshold);
 
-  auto model = get_shared_model(cfg.model_path);
-  if (!model) {
+#if defined(KVD_SIGNATURE_ONLY)
+    kvd_handle* h = new (std::nothrow) kvd_handle{};
+    if (!h) {
+      return nullptr;
+    }
+    h->config = std::move(cfg);
+    h->token = std::make_shared<int>(1);
+    return h;
+#else
+    auto model = get_shared_model(cfg.model_path);
+    if (!model) {
+      return nullptr;
+    }
+    auto model_normal = get_shared_model(cfg.model_normal_path);
+    auto model_packed = get_shared_model(cfg.model_packed_path);
+    auto family_classifier = get_shared_family_classifier(cfg.family_classifier_json_path);
+    kvd_handle* h = new (std::nothrow) kvd_handle{};
+    if (!h) {
+      return nullptr;
+    }
+    h->config = std::move(cfg);
+    h->token = std::make_shared<int>(1);
+    h->model = std::move(model);
+    h->model_normal = std::move(model_normal);
+    h->model_packed = std::move(model_packed);
+    h->family_classifier = std::move(family_classifier);
+    return h;
+#endif
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_create_exception", e.what());
+    return nullptr;
+  } catch (...) {
+    kvd_log_event("kvd_create_exception", "unknown");
     return nullptr;
   }
-  auto model_normal = get_shared_model(cfg.model_normal_path);
-  auto model_packed = get_shared_model(cfg.model_packed_path);
-  auto family_classifier = get_shared_family_classifier(cfg.family_classifier_json_path);
-  kvd_handle* h = new (std::nothrow) kvd_handle{};
-  if (!h) {
-    return nullptr;
-  }
-  h->config = std::move(cfg);
-  h->token = std::make_shared<int>(1);
-  h->model = std::move(model);
-  h->model_normal = std::move(model_normal);
-  h->model_packed = std::move(model_packed);
-  h->family_classifier = std::move(family_classifier);
-  return h;
 }
 
 void kvd_destroy(kvd_handle* handle) {
-  delete handle;
+  try {
+    if (!handle) {
+      return;
+    }
+    delete handle;
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_destroy_exception", e.what());
+  } catch (...) {
+    kvd_log_event("kvd_destroy_exception", "unknown");
+  }
 }
 
 static int write_json_out(const nlohmann::json& j, char** out_json, size_t* out_len) {
@@ -106,9 +213,108 @@ static int write_string_out(const std::string& s, char** out_json, size_t* out_l
   return 0;
 }
 
+static int write_train_error(const std::string& code, char** out_json, size_t* out_len) {
+  nlohmann::json j;
+  j["ok"] = false;
+  j["total"] = 0;
+  j["trained"] = 0;
+  j["failed"] = 0;
+  j["error"] = code;
+  return write_json_out(j, out_json, out_len);
+}
+
 static bool path_exists(const std::string& path) {
   std::error_code ec;
-  return !path.empty() && std::filesystem::exists(std::filesystem::path(path), ec) && !ec;
+  auto p = kvd::to_filesystem_path(path);
+  if (!p) {
+    return false;
+  }
+  return std::filesystem::exists(*p, ec) && !ec;
+}
+
+static kvd::MalwareScanner* get_thread_scanner(kvd_handle* handle);
+
+static void collect_train_targets(const std::string& path, std::vector<std::string>& out) {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  auto p_opt = kvd::to_filesystem_path(path);
+  if (!p_opt) {
+    return;
+  }
+  std::filesystem::path p = *p_opt;
+  if (std::filesystem::is_regular_file(p, ec)) {
+    auto u8 = p.u8string();
+    out.push_back(std::string(reinterpret_cast<const char*>(u8.data()), u8.size()));
+    return;
+  }
+  if (!std::filesystem::is_directory(p, ec)) {
+    return;
+  }
+  std::filesystem::recursive_directory_iterator it(
+      p, std::filesystem::directory_options::skip_permission_denied, ec);
+  std::filesystem::recursive_directory_iterator end;
+  for (; it != end; it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    if (it->is_regular_file(ec)) {
+      auto u8 = it->path().u8string();
+      out.push_back(std::string(reinterpret_cast<const char*>(u8.data()), u8.size()));
+    }
+  }
+}
+
+static int kvd_train_internal(kvd_handle* handle, const std::vector<std::string>& paths, bool is_malware, char** out_json, size_t* out_len) {
+  if (!handle) {
+    return -1;
+  }
+  std::vector<std::string> files;
+  for (const auto& p : paths) {
+    if (p.empty()) continue;
+    collect_train_targets(p, files);
+  }
+  std::size_t total = files.size();
+  std::atomic<std::size_t> trained{0};
+  if (total > 0) {
+    std::size_t hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    std::size_t threads = std::min<std::size_t>(hw, total);
+    threads = std::min<std::size_t>(threads, 16);
+    std::atomic<std::size_t> next{0};
+    std::vector<std::thread> pool;
+    pool.reserve(threads);
+    for (std::size_t t = 0; t < threads; ++t) {
+      pool.emplace_back([&]() {
+        auto scanner = get_thread_scanner(handle);
+        if (!scanner) return;
+        for (;;) {
+          std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+          if (i >= files.size()) return;
+          if (scanner->train_path(files[i], is_malware)) {
+            trained.fetch_add(1, std::memory_order_relaxed);
+          }
+        }
+      });
+    }
+    for (auto& th : pool) th.join();
+  }
+  std::size_t trained_n = trained.load(std::memory_order_relaxed);
+  std::size_t failed = total >= trained_n ? (total - trained_n) : 0;
+  if (trained_n > 0) {
+    try {
+      kvd::flush_signature_db();
+    } catch (...) {
+    }
+  }
+  nlohmann::json j;
+  j["ok"] = trained_n > 0;
+  j["total"] = total;
+  j["trained"] = trained_n;
+  j["failed"] = failed;
+  return write_json_out(j, out_json, out_len);
 }
 
 static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& path) {
@@ -194,56 +400,136 @@ static kvd::MalwareScanner* get_thread_scanner(kvd_handle* handle) {
 }
 
 int kvd_scan_path(kvd_handle* handle, const char* path, char** out_json, size_t* out_len) {
-  if (!handle || !path) {
+  try {
+    if (!handle || !path) {
+      return -1;
+    }
+    auto scanner = get_thread_scanner(handle);
+    if (!scanner) {
+      return -1;
+    }
+    kvd::ScanResult r = scanner->scan_path(path);
+    return write_json_out(to_json(r), out_json, out_len);
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_scan_path_exception", kvd_basename(path) + ":" + e.what());
+    return -1;
+  } catch (...) {
+    kvd_log_event("kvd_scan_path_exception", kvd_basename(path) + ":unknown");
     return -1;
   }
-  auto scanner = get_thread_scanner(handle);
-  if (!scanner) {
-    return -1;
-  }
-  kvd::ScanResult r = scanner->scan_path(path);
-  return write_json_out(to_json(r), out_json, out_len);
 }
 
 int kvd_scan_bytes(kvd_handle* handle, const unsigned char* bytes, size_t len, char** out_json, size_t* out_len) {
-  if (!handle || !bytes) {
+  try {
+    if (!handle || !bytes) {
+      return -1;
+    }
+    std::vector<std::uint8_t> v(bytes, bytes + len);
+    auto scanner = get_thread_scanner(handle);
+    if (!scanner) {
+      return -1;
+    }
+    kvd::ScanResult r = scanner->scan_bytes(v);
+    return write_json_out(to_json(r), out_json, out_len);
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_scan_bytes_exception", e.what());
+    return -1;
+  } catch (...) {
+    kvd_log_event("kvd_scan_bytes_exception", "unknown");
     return -1;
   }
-  std::vector<std::uint8_t> v(bytes, bytes + len);
-  auto scanner = get_thread_scanner(handle);
-  if (!scanner) {
-    return -1;
-  }
-  kvd::ScanResult r = scanner->scan_bytes(v);
-  return write_json_out(to_json(r), out_json, out_len);
 }
 
 int kvd_scan_paths(kvd_handle* handle, const char** paths, size_t count, char** out_json, size_t* out_len) {
-  if (!handle) {
-    return -1;
-  }
-  if (!paths && count > 0) {
-    return -1;
-  }
-  std::vector<std::string> v;
-  v.reserve(count);
-  for (size_t i = 0; i < count; ++i) {
-    if (paths && paths[i]) {
-      v.emplace_back(paths[i]);
-    } else {
-      v.emplace_back();
+  try {
+    if (!handle) {
+      return -1;
     }
-  }
-  auto scanner = get_thread_scanner(handle);
-  if (!scanner) {
+    if (!paths && count > 0) {
+      return -1;
+    }
+    std::vector<std::string> v;
+    v.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      if (paths && paths[i]) {
+        v.emplace_back(paths[i]);
+      } else {
+        v.emplace_back();
+      }
+    }
+    auto scanner = get_thread_scanner(handle);
+    if (!scanner) {
+      return -1;
+    }
+    auto results = scanner->scan_paths(v);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& r : results) {
+      arr.push_back(to_json(r));
+    }
+    return write_json_out(arr, out_json, out_len);
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_scan_paths_exception", std::to_string(count) + ":" + e.what());
+    return -1;
+  } catch (...) {
+    kvd_log_event("kvd_scan_paths_exception", std::to_string(count) + ":unknown");
     return -1;
   }
-  auto results = scanner->scan_paths(v);
-  nlohmann::json arr = nlohmann::json::array();
-  for (const auto& r : results) {
-    arr.push_back(to_json(r));
+}
+
+int kvd_train_path(kvd_handle* handle, const char* path, int label, char** out_json, size_t* out_len) {
+  try {
+    if (!handle || !path) {
+      return write_train_error("invalid_argument", out_json, out_len);
+    }
+    std::vector<std::string> v;
+    v.emplace_back(path);
+    return kvd_train_internal(handle, v, label != 0, out_json, out_len);
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_train_path_exception", kvd_basename(path) + ":" + e.what());
+    return write_train_error("exception", out_json, out_len);
+  } catch (...) {
+    kvd_log_event("kvd_train_path_exception", kvd_basename(path) + ":unknown");
+    return write_train_error("exception", out_json, out_len);
   }
-  return write_json_out(arr, out_json, out_len);
+}
+
+int kvd_train_paths(kvd_handle* handle, const char** paths, size_t count, int label, char** out_json, size_t* out_len) {
+  try {
+    if (!handle) {
+      return write_train_error("invalid_argument", out_json, out_len);
+    }
+    if (!paths && count > 0) {
+      return write_train_error("invalid_argument", out_json, out_len);
+    }
+    std::vector<std::string> v;
+    v.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      if (paths && paths[i]) {
+        v.emplace_back(paths[i]);
+      } else {
+        v.emplace_back();
+      }
+    }
+    return kvd_train_internal(handle, v, label != 0, out_json, out_len);
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_train_paths_exception", std::to_string(count) + ":" + e.what());
+    return write_train_error("exception", out_json, out_len);
+  } catch (...) {
+    kvd_log_event("kvd_train_paths_exception", std::to_string(count) + ":unknown");
+    return write_train_error("exception", out_json, out_len);
+  }
+}
+
+int kvd_train_from_path(kvd_handle* handle, const char* path, int label, char** out_json, size_t* out_len) {
+  return kvd_train_path(handle, path, label, out_json, out_len);
+}
+
+void kvd_signature_flush(kvd_handle* handle) {
+  try {
+    if (!handle) return;
+    kvd::flush_signature_db();
+  } catch (...) {
+  }
 }
 
 void kvd_free(char* p) {
@@ -251,83 +537,97 @@ void kvd_free(char* p) {
 }
 
 int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len) {
-  if (!config) {
+  try {
+    if (!config) {
+      return KVD_MODEL_ERR_INVALID_ARGUMENT;
+    }
+    if ((out_error && !out_len) || (!out_error && out_len)) {
+      return KVD_MODEL_ERR_INVALID_ARGUMENT;
+    }
+
+    kvd::Config cfg = kvd::config_from_api(
+        config->model_path,
+        config->model_normal_path,
+        config->model_packed_path,
+        config->family_classifier_json_path,
+        config->allowed_scan_root,
+        config->max_file_size,
+        config->prediction_threshold);
+
+    auto write_error = [&](const std::string& code) -> int {
+      if (!out_error && !out_len) {
+        return 0;
+      }
+      int rc = write_string_out(code, out_error, out_len);
+      return rc == 0 ? 0 : KVD_MODEL_ERR_OOM;
+    };
+
+#if defined(KVD_SIGNATURE_ONLY)
+    int rc = write_error("ok");
+    return rc == 0 ? KVD_MODEL_OK : rc;
+#else
+
+    if (cfg.model_path.empty()) {
+      int rc = write_error("model_main_missing");
+      return rc == 0 ? KVD_MODEL_ERR_MAIN_MISSING : rc;
+    }
+    if (!path_exists(cfg.model_path)) {
+      int rc = write_error("model_main_missing");
+      return rc == 0 ? KVD_MODEL_ERR_MAIN_MISSING : rc;
+    }
+    if (!kvd::LightGbmModel::load_from_file(cfg.model_path)) {
+      int rc = write_error("model_main_invalid");
+      return rc == 0 ? KVD_MODEL_ERR_MAIN_INVALID : rc;
+    }
+
+    bool has_normal = !cfg.model_normal_path.empty();
+    bool has_packed = !cfg.model_packed_path.empty();
+    if (has_normal != has_packed) {
+      int rc = write_error("model_route_incomplete");
+      return rc == 0 ? KVD_MODEL_ERR_ROUTE_INCOMPLETE : rc;
+    }
+
+    if (has_normal) {
+      if (!path_exists(cfg.model_normal_path)) {
+        int rc = write_error("model_normal_missing");
+        return rc == 0 ? KVD_MODEL_ERR_NORMAL_MISSING : rc;
+      }
+      if (!kvd::LightGbmModel::load_from_file(cfg.model_normal_path)) {
+        int rc = write_error("model_normal_invalid");
+        return rc == 0 ? KVD_MODEL_ERR_NORMAL_INVALID : rc;
+      }
+    }
+
+    if (has_packed) {
+      if (!path_exists(cfg.model_packed_path)) {
+        int rc = write_error("model_packed_missing");
+        return rc == 0 ? KVD_MODEL_ERR_PACKED_MISSING : rc;
+      }
+      if (!kvd::LightGbmModel::load_from_file(cfg.model_packed_path)) {
+        int rc = write_error("model_packed_invalid");
+        return rc == 0 ? KVD_MODEL_ERR_PACKED_INVALID : rc;
+      }
+    }
+
+    if (!cfg.family_classifier_json_path.empty()) {
+      if (!path_exists(cfg.family_classifier_json_path)) {
+        int rc = write_error("family_classifier_missing");
+        return rc == 0 ? KVD_MODEL_ERR_FAMILY_MISSING : rc;
+      }
+      if (!kvd::FamilyClassifier::load_from_json(cfg.family_classifier_json_path)) {
+        int rc = write_error("family_classifier_invalid");
+        return rc == 0 ? KVD_MODEL_ERR_FAMILY_INVALID : rc;
+      }
+    }
+
+    int rc = write_error("ok");
+    return rc == 0 ? KVD_MODEL_OK : rc;
+#endif
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_validate_exception", e.what());
+    return KVD_MODEL_ERR_INVALID_ARGUMENT;
+  } catch (...) {
+    kvd_log_event("kvd_validate_exception", "unknown");
     return KVD_MODEL_ERR_INVALID_ARGUMENT;
   }
-  if ((out_error && !out_len) || (!out_error && out_len)) {
-    return KVD_MODEL_ERR_INVALID_ARGUMENT;
-  }
-
-  kvd::Config cfg = kvd::config_from_api(
-      config->model_path,
-      config->model_normal_path,
-      config->model_packed_path,
-      config->family_classifier_json_path,
-      config->allowed_scan_root,
-      config->max_file_size,
-      config->prediction_threshold);
-
-  auto write_error = [&](const std::string& code) -> int {
-    if (!out_error && !out_len) {
-      return 0;
-    }
-    int rc = write_string_out(code, out_error, out_len);
-    return rc == 0 ? 0 : KVD_MODEL_ERR_OOM;
-  };
-
-  if (cfg.model_path.empty()) {
-    int rc = write_error("model_main_missing");
-    return rc == 0 ? KVD_MODEL_ERR_MAIN_MISSING : rc;
-  }
-  if (!path_exists(cfg.model_path)) {
-    int rc = write_error("model_main_missing");
-    return rc == 0 ? KVD_MODEL_ERR_MAIN_MISSING : rc;
-  }
-  if (!kvd::LightGbmModel::load_from_file(cfg.model_path)) {
-    int rc = write_error("model_main_invalid");
-    return rc == 0 ? KVD_MODEL_ERR_MAIN_INVALID : rc;
-  }
-
-  bool has_normal = !cfg.model_normal_path.empty();
-  bool has_packed = !cfg.model_packed_path.empty();
-  if (has_normal != has_packed) {
-    int rc = write_error("model_route_incomplete");
-    return rc == 0 ? KVD_MODEL_ERR_ROUTE_INCOMPLETE : rc;
-  }
-
-  if (has_normal) {
-    if (!path_exists(cfg.model_normal_path)) {
-      int rc = write_error("model_normal_missing");
-      return rc == 0 ? KVD_MODEL_ERR_NORMAL_MISSING : rc;
-    }
-    if (!kvd::LightGbmModel::load_from_file(cfg.model_normal_path)) {
-      int rc = write_error("model_normal_invalid");
-      return rc == 0 ? KVD_MODEL_ERR_NORMAL_INVALID : rc;
-    }
-  }
-
-  if (has_packed) {
-    if (!path_exists(cfg.model_packed_path)) {
-      int rc = write_error("model_packed_missing");
-      return rc == 0 ? KVD_MODEL_ERR_PACKED_MISSING : rc;
-    }
-    if (!kvd::LightGbmModel::load_from_file(cfg.model_packed_path)) {
-      int rc = write_error("model_packed_invalid");
-      return rc == 0 ? KVD_MODEL_ERR_PACKED_INVALID : rc;
-    }
-  }
-
-  if (!cfg.family_classifier_json_path.empty()) {
-    if (!path_exists(cfg.family_classifier_json_path)) {
-      int rc = write_error("family_classifier_missing");
-      return rc == 0 ? KVD_MODEL_ERR_FAMILY_MISSING : rc;
-    }
-    if (!kvd::FamilyClassifier::load_from_json(cfg.family_classifier_json_path)) {
-      int rc = write_error("family_classifier_invalid");
-      return rc == 0 ? KVD_MODEL_ERR_FAMILY_INVALID : rc;
-    }
-  }
-
-  int rc = write_error("ok");
-  return rc == 0 ? KVD_MODEL_OK : rc;
 }

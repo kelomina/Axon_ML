@@ -44,6 +44,10 @@ std::vector<float> extract_combined_pe_features_from_path(
     const std::string& path,
     const std::optional<std::string>& allowed_root);
 
+std::optional<std::vector<std::string>> extract_import_sequence_from_path(
+    const std::string& path,
+    const std::optional<std::string>& allowed_root);
+
 std::optional<std::size_t> pe_feature_index(const std::string& name);
 
 }

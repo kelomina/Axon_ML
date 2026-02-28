@@ -5,5 +5,9 @@ EXPORTS
   kvd_scan_path
   kvd_scan_bytes
   kvd_scan_paths
+  kvd_train_path
+  kvd_train_paths
+  kvd_train_from_path
+  kvd_signature_flush
   kvd_free
   kvd_validate_models

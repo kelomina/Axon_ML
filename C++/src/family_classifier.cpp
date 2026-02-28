@@ -3,6 +3,8 @@
 #include <cmath>
 #include <fstream>
 
+#include "util_filesystem.h"
+
 #include <nlohmann/json.hpp>
 
 namespace kvd {
@@ -34,7 +36,11 @@ static std::vector<float> apply_scaler(const std::vector<float>& x, const std::v
 }
 
 std::optional<FamilyClassifier> FamilyClassifier::load_from_json(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
+  auto fs_path = to_filesystem_path(path);
+  if (!fs_path) {
+    return std::nullopt;
+  }
+  std::ifstream f(*fs_path, std::ios::binary);
   if (!f) {
     return std::nullopt;
   }

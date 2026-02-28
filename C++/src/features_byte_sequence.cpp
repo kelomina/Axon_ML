@@ -53,7 +53,11 @@ std::optional<ByteSequenceResult> extract_byte_sequence_from_path(
   ByteSequenceResult r;
   r.padded_sequence.assign(max_file_size, 0);
   {
-    std::ifstream f(*valid, std::ios::binary);
+    auto fs_path = to_filesystem_path(*valid);
+    if (!fs_path) {
+      return std::nullopt;
+    }
+    std::ifstream f(*fs_path, std::ios::binary);
     if (!f) {
       return std::nullopt;
     }

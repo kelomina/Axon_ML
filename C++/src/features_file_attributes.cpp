@@ -65,7 +65,13 @@ std::unordered_map<std::string, float> extract_file_attributes(
   }
 
   std::error_code ec;
-  std::uintmax_t file_size = std::filesystem::file_size(std::filesystem::path(*valid), ec);
+  std::uintmax_t file_size = 0;
+  auto fs_path = to_filesystem_path(*valid);
+  if (fs_path) {
+    file_size = std::filesystem::file_size(*fs_path, ec);
+  } else {
+    ec = std::make_error_code(std::errc::invalid_argument);
+  }
   if (ec) {
     return features;
   }
