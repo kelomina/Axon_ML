@@ -3,17 +3,16 @@ import numpy as np
 import lightgbm as lgb
 from features.extractor_in_memory import PE_FEATURE_ORDER
 from config.config import (
-    GATING_MODE, GATE_HIGH_ENTROPY_RATIO, GATE_PACKED_SECTIONS_RATIO, GATE_PACKER_RATIO,
-    GATING_THRESHOLD, EXPERT_NORMAL_MODEL_PATH, EXPERT_PACKED_MODEL_PATH, PE_FEATURE_VECTOR_DIM
+    GATING_MODE, EXPERT_NORMAL_MODEL_PATH, EXPERT_PACKED_MODEL_PATH, PE_FEATURE_VECTOR_DIM,
+    PACKED_SECTIONS_RATIO_THRESHOLD, PACKER_KEYWORD_HITS_THRESHOLD
 )
 
 class RoutingModel:
     def __init__(self):
         self.expert_normal = None
         self.expert_packed = None
-        self._idx_high_entropy = self._feature_index('high_entropy_ratio')
         self._idx_packed_sections = self._feature_index('packed_sections_ratio')
-        self._idx_packer_hits = self._feature_index('packer_keyword_hits_ratio')
+        self._idx_packer_hits = self._feature_index('packer_keyword_hits_count')
         self.load_models()
 
     def load_models(self):
@@ -32,8 +31,7 @@ class RoutingModel:
 
     def predict(self, features):
         x = np.asarray(features)
-        packed_probs = self._rule_gating(x)
-        routing_decisions = (packed_probs > GATING_THRESHOLD).astype(int)
+        routing_decisions = self._rule_gating(x)
         predictions = np.zeros(len(x))
         normal_indices = np.where(routing_decisions == 0)[0]
         packed_indices = np.where(routing_decisions == 1)[0]
@@ -61,15 +59,14 @@ class RoutingModel:
 
     def _rule_gating(self, x):
         start = x.shape[1] - PE_FEATURE_VECTOR_DIM
-        h = self._idx_high_entropy
         p = self._idx_packed_sections
         k = self._idx_packer_hits
-        he = x[:, start + h] if h is not None else np.zeros(len(x))
         ps = x[:, start + p] if p is not None else np.zeros(len(x))
         kh = x[:, start + k] if k is not None else np.zeros(len(x))
-        score = np.maximum.reduce([he - GATE_HIGH_ENTROPY_RATIO, ps - GATE_PACKED_SECTIONS_RATIO, kh - GATE_PACKER_RATIO])
-        probs = 1.0 / (1.0 + np.exp(-10.0 * score))
-        return probs
+        return np.logical_or(
+            ps > PACKED_SECTIONS_RATIO_THRESHOLD,
+            kh > PACKER_KEYWORD_HITS_THRESHOLD
+        ).astype(int)
 
     def get_routing_stats(self, routing_decisions):
         total = len(routing_decisions)
