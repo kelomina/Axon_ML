@@ -775,7 +775,9 @@ def extract_combined_pe_features(file_path):
             break
         if key in all_features:
             val = all_features[key]
-            if 'size' in key and isinstance(val, (int, float)):
+            if key == 'log_size' and isinstance(val, (int, float)):
+                val = val / np.log(SIZE_NORM_MAX)
+            elif 'size' in key and isinstance(val, (int, float)):
                 val = val / SIZE_NORM_MAX
             elif key == 'timestamp' and isinstance(val, (int, float)):
                 val = val / TIMESTAMP_MAX
@@ -783,8 +785,6 @@ def extract_combined_pe_features(file_path):
                 val = (val - TIMESTAMP_YEAR_BASE) / (TIMESTAMP_YEAR_MAX - TIMESTAMP_YEAR_BASE)
             elif key.startswith('has_') and isinstance(val, (int, float)):
                 val = float(val)
-            elif key == 'log_size' and isinstance(val, (int, float)):
-                val = val / np.log(SIZE_NORM_MAX)
             combined_vector[256 + i] = val * 0.8 if isinstance(val, (int, float)) else 0
     norm = np.linalg.norm(combined_vector)
     if norm > 0 and not np.isnan(norm):

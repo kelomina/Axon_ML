@@ -5,6 +5,7 @@
 #include "util_filesystem.h"
 
 #include <LIEF/PE.hpp>
+#include <LIEF/utils.hpp>
 
 #include <algorithm>
 #include <array>
@@ -712,17 +713,42 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   bool has_version = false;
   std::size_t company_name_len = 0;
   std::size_t product_name_len = 0;
+  std::size_t file_version_len = 0;
+  std::size_t original_filename_len = 0;
   if (bin.has_resources()) {
     auto rm_res = bin.resources_manager();
     if (rm_res) {
-      has_version = rm_res.value().has_version();
+      auto& rm = rm_res.value();
+      has_version = rm.has_version();
+      if (has_version) {
+        auto versions = rm.version();
+        for (const auto& ver : versions) {
+          const auto* sfi = ver.string_file_info();
+          if (!sfi) continue;
+          for (const auto& table : sfi->children()) {
+            for (const auto& entry : table.entries()) {
+              std::string key = lower_ascii(LIEF::u16tou8(entry.key, true));
+              std::string val = LIEF::u16tou8(entry.value, true);
+              if (key == "companyname") {
+                company_name_len = std::max(company_name_len, val.size());
+              } else if (key == "productname") {
+                product_name_len = std::max(product_name_len, val.size());
+              } else if (key == "fileversion") {
+                file_version_len = std::max(file_version_len, val.size());
+              } else if (key == "originalfilename") {
+                original_filename_len = std::max(original_filename_len, val.size());
+              }
+            }
+          }
+        }
+      }
     }
   }
   features["version_info_present"] = has_version ? 1.0f : 0.0f;
   features["company_name_len"] = static_cast<float>(company_name_len);
   features["product_name_len"] = static_cast<float>(product_name_len);
-  features["file_version_len"] = 0.0f;
-  features["original_filename_len"] = 0.0f;
+  features["file_version_len"] = static_cast<float>(file_version_len);
+  features["original_filename_len"] = static_cast<float>(original_filename_len);
 
   features["has_upx_section"] = upx_section_count > 0 ? 1.0f : 0.0f;
   features["upx_section_count"] = static_cast<float>(upx_section_count);
@@ -854,7 +880,9 @@ std::vector<float> extract_combined_pe_features_from_path(
     auto it = all_features.find(key);
     if (it != all_features.end()) v = it->second;
 
-    if (key.find("size") != std::string::npos) {
+    if (key == "log_size") {
+      v = log_size_norm > 0.0f ? (v / log_size_norm) : 0.0f;
+    } else if (key.find("size") != std::string::npos) {
       v = v / SIZE_NORM_MAX;
     } else if (key == "timestamp") {
       v = v / TIMESTAMP_MAX;
@@ -862,8 +890,6 @@ std::vector<float> extract_combined_pe_features_from_path(
       v = (v - TIMESTAMP_YEAR_BASE) / (TIMESTAMP_YEAR_MAX - TIMESTAMP_YEAR_BASE);
     } else if (key.rfind("has_", 0) == 0) {
       v = v > 0.0f ? 1.0f : 0.0f;
-    } else if (key == "log_size") {
-      v = log_size_norm > 0.0f ? (v / log_size_norm) : 0.0f;
     }
     if (!std::isfinite(v)) v = 0.0f;
     combined[base_offset + i] = v * PE_FEATURE_SCALE;
