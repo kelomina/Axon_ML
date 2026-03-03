@@ -111,6 +111,42 @@ static void l2_normalize(std::vector<float>& v) {
   for (float& x : v) x /= n;
 }
 
+static float get_or_zero(const std::unordered_map<std::string, float>& m, const std::string& key) {
+  auto it = m.find(key);
+  if (it == m.end()) return 0.0f;
+  return it->second;
+}
+
+static float safe_ratio(float numerator, float denominator) {
+  if (!std::isfinite(numerator) || !std::isfinite(denominator) || denominator <= 0.0f) {
+    return 0.0f;
+  }
+  return numerator / denominator;
+}
+
+static float clamp01(float v) {
+  if (!std::isfinite(v)) return 0.0f;
+  if (v < 0.0f) return 0.0f;
+  if (v > 1.0f) return 1.0f;
+  return v;
+}
+
+static bool should_size_norm_max(const std::string& key) {
+  static const std::unordered_set<std::string> keys = {
+      "size","section_total_size","section_total_vsize","avg_section_size","avg_section_vsize",
+      "max_section_size","min_section_size","trailing_data_size","pe_header_size","signature_size"};
+  return keys.find(key) != keys.end();
+}
+
+static bool should_count_norm(const std::string& key) {
+  static const std::unordered_set<std::string> keys = {
+      "imports_count","exports_count","unique_imports","unique_dlls","unique_apis","resources_count",
+      "sections_count","symbols_count","imported_system_dlls_count","packer_keyword_hits_count",
+      "tls_callbacks_count","reloc_blocks_count","reloc_entries_count","upx_section_count","compressed_section_count",
+      "alignment_mismatch_count","rwx_sections_count","non_standard_executable_sections_count","section_names_count"};
+  return keys.find(key) != keys.end();
+}
+
 static std::unordered_map<std::string, float> extract_lightweight_features(const LIEF::PE::Binary& bin) {
   std::unordered_map<std::string, float> out;
   std::vector<float> v(LIGHTWEIGHT_FEATURE_DIM, 0.0f);
@@ -158,6 +194,7 @@ static std::unordered_map<std::string, float> extract_lightweight_features(const
 
 static std::unordered_map<std::string, float> extract_enhanced_pe_features(const std::string& valid_path, const LIEF::PE::Binary& bin) {
   std::unordered_map<std::string, float> features;
+  try {
 
   std::error_code ec;
   std::uintmax_t file_size = 0;
@@ -771,8 +808,27 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
     std::string k = std::string("has_") + sec + "_section";
     features[k] = common_section_present[i] ? 1.0f : 0.0f;
   }
+  float sections_count_f = get_or_zero(features, "sections_count");
+  float imports_count_f = get_or_zero(features, "imports_count");
+  float packed_sections_ratio_f = get_or_zero(features, "packed_sections_ratio");
+  float high_entropy_ratio_f = get_or_zero(features, "high_entropy_ratio");
+  float rwx_sections_ratio_f = get_or_zero(features, "rwx_sections_ratio");
+  float non_standard_exec_count_f = get_or_zero(features, "non_standard_executable_sections_count");
+  float alignment_mismatch_ratio_f = get_or_zero(features, "alignment_mismatch_ratio");
+  float network_ratio_f = get_or_zero(features, "api_network_ratio");
+  float process_ratio_f = get_or_zero(features, "api_process_ratio");
+  float fs_ratio_f = get_or_zero(features, "api_filesystem_ratio");
+  float reg_ratio_f = get_or_zero(features, "api_registry_ratio");
+  features["imports_per_section"] = safe_ratio(imports_count_f, sections_count_f + 1.0f);
+  features["entropy_packed_interaction"] = clamp01(packed_sections_ratio_f * high_entropy_ratio_f);
+  features["suspicious_section_score"] = clamp01(rwx_sections_ratio_f + safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f) + alignment_mismatch_ratio_f);
+  features["api_behavior_mix_score"] = clamp01(network_ratio_f + process_ratio_f + fs_ratio_f + reg_ratio_f);
+  features["overlay_entropy_weighted"] = clamp01(get_or_zero(features, "overlay_entropy") * get_or_zero(features, "trailing_data_ratio"));
 
   return features;
+  } catch (...) {
+    return features;
+  }
 }
 
 static std::vector<std::string> build_feature_order() {
@@ -795,7 +851,8 @@ static std::vector<std::string> build_feature_order() {
       "executable_code_density","non_standard_executable_sections_count","rwx_sections_count","rwx_sections_ratio",
       "special_char_ratio","long_sections_ratio","short_sections_ratio","dll_imports_entropy","api_imports_entropy",
       "imported_system_dlls_ratio","resources_count","alignment_mismatch_count","alignment_mismatch_ratio","entry_point_ratio",
-      "syscall_api_ratio","import_ordinal_only_count","import_ordinal_only_ratio","avg_imports_per_dll","exports_name_ratio","entry_in_nonstandard_section_flag","tls_callbacks_count","reloc_blocks_count","reloc_entries_count","checksum_zero_flag","api_network_ratio","api_process_ratio","api_filesystem_ratio","api_registry_ratio","overlay_entropy","overlay_high_entropy_flag","packer_keyword_hits_count","packer_keyword_hits_ratio"};
+      "syscall_api_ratio","import_ordinal_only_count","import_ordinal_only_ratio","avg_imports_per_dll","exports_name_ratio","entry_in_nonstandard_section_flag","tls_callbacks_count","reloc_blocks_count","reloc_entries_count","checksum_zero_flag","api_network_ratio","api_process_ratio","api_filesystem_ratio","api_registry_ratio","overlay_entropy","overlay_high_entropy_flag","packer_keyword_hits_count","packer_keyword_hits_ratio",
+      "imports_per_section","entropy_packed_interaction","suspicious_section_score","api_behavior_mix_score","overlay_entropy_weighted"};
 
   std::vector<std::string> order = BASE;
   order.reserve(1500);
@@ -815,7 +872,6 @@ std::vector<float> extract_combined_pe_features_from_path(
   if (!valid) {
     return {};
   }
-
   std::vector<std::uint8_t> data;
   if (!read_file_bytes(*valid, data)) {
     return {};
@@ -882,8 +938,10 @@ std::vector<float> extract_combined_pe_features_from_path(
 
     if (key == "log_size") {
       v = log_size_norm > 0.0f ? (v / log_size_norm) : 0.0f;
-    } else if (key.find("size") != std::string::npos) {
+    } else if (should_size_norm_max(key)) {
       v = v / SIZE_NORM_MAX;
+    } else if (should_count_norm(key)) {
+      v = std::log1p(std::max(0.0f, v)) / std::log1p(4096.0f);
     } else if (key == "timestamp") {
       v = v / TIMESTAMP_MAX;
     } else if (key == "timestamp_year") {
@@ -891,6 +949,7 @@ std::vector<float> extract_combined_pe_features_from_path(
     } else if (key.rfind("has_", 0) == 0) {
       v = v > 0.0f ? 1.0f : 0.0f;
     }
+    v = clamp01(v);
     if (!std::isfinite(v)) v = 0.0f;
     combined[base_offset + i] = v * PE_FEATURE_SCALE;
   }

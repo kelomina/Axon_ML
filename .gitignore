@@ -28,7 +28,6 @@ resources/weights_cluster_eval/eval/*.png
 resources/weights_cluster_eval/eval/*.txt
 
 # 临时缓存
-*.pkl
 *.json
 *.npy
 *.log
@@ -57,3 +56,7 @@ benign_samples
 malicious_samples
 .trae
 data
+reports
+scan_results
+hard_samples_analysis
+feature_scaler.pkl

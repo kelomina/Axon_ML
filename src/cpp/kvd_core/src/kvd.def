@@ -11,3 +11,4 @@ EXPORTS
   kvd_free
   kvd_validate_models
   kvd_extract_pe_features
+  kvd_extract_pe_features_batch

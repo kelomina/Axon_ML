@@ -562,6 +562,76 @@ int kvd_extract_pe_features(const char* path, float* out_features, size_t out_le
   }
 }
 
+int kvd_extract_pe_features_batch(
+    const char** paths,
+    size_t count,
+    float* out_features,
+    size_t feature_dim,
+    int* out_status,
+    unsigned int thread_count) {
+  try {
+    if (!paths || !out_features || !out_status) {
+      return -1;
+    }
+    if (feature_dim < KVD_PE_FEATURE_VECTOR_DIM) {
+      return -1;
+    }
+    if (count == 0) {
+      return 0;
+    }
+
+    std::size_t hw = static_cast<std::size_t>(std::thread::hardware_concurrency());
+    if (hw == 0) {
+      hw = 8;
+    }
+    std::size_t workers = thread_count > 0 ? static_cast<std::size_t>(thread_count) : hw;
+    if (workers == 0) {
+      workers = 1;
+    }
+    std::size_t io_safe_cap = std::clamp<std::size_t>(hw / 2, 4, 16);
+    workers = std::min<std::size_t>(workers, count);
+    workers = std::min<std::size_t>(workers, io_safe_cap);
+
+    std::atomic<std::size_t> next{0};
+    std::vector<std::thread> pool;
+    pool.reserve(workers);
+    for (std::size_t t = 0; t < workers; ++t) {
+      pool.emplace_back([&]() {
+        for (;;) {
+          std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+          if (i >= count) {
+            return;
+          }
+          float* dst = out_features + i * feature_dim;
+          std::fill_n(dst, feature_dim, 0.0f);
+          const char* p = paths[i];
+          if (!p) {
+            out_status[i] = -1;
+            continue;
+          }
+          try {
+            std::vector<float> features = kvd::extract_combined_pe_features_from_path(p, std::nullopt);
+            if (features.size() != KVD_PE_FEATURE_VECTOR_DIM) {
+              out_status[i] = -2;
+              continue;
+            }
+            std::copy(features.begin(), features.end(), dst);
+            out_status[i] = 0;
+          } catch (...) {
+            out_status[i] = -2;
+          }
+        }
+      });
+    }
+    for (auto& th : pool) {
+      th.join();
+    }
+    return 0;
+  } catch (...) {
+    return -2;
+  }
+}
+
 int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len) {
   try {
     if (!config) {

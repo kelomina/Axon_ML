@@ -60,6 +60,8 @@ METADATA_FILE = os.path.join(PROCESSED_DATA_DIR, 'metadata.json')
 SAVED_MODEL_DIR = os.path.join(RESOURCES_DIR, 'weights')
 # MODEL_PATH：LightGBM 模型文件路径；用途：扫描与评估加载模型；推荐值：resources/weights_cluster_eval/weights/lightgbm_model.txt
 MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model.txt')
+FEATURE_SCALER_PATH = os.path.join(SAVED_MODEL_DIR, 'feature_scaler.pkl')
+THRESHOLD_REPORT_PATH = os.path.join(RESOURCES_DIR, 'eval', 'threshold_optimization.json')
 # HDBSCAN_SAVE_DIR：聚类结果目录；用途：保存标签与可视化；推荐值：resources/weights_cluster_eval/cluster
 HDBSCAN_SAVE_DIR = os.path.join(RESOURCES_DIR, 'cluster')
 # FEATURES_PKL_PATH：特征持久化文件；用途：跳过重复特征提取；推荐值：resources/weights_cluster_eval/cluster/extracted_features.pkl
@@ -170,18 +172,18 @@ DEFAULT_MIN_SAMPLES = 1
 DEFAULT_MIN_FAMILY_SIZE = 1
 # DEFAULT_TREAT_NOISE_AS_FAMILY：将噪声视为独立家族；用途：开启后每个噪声点将分配独立家族 ID；推荐值：True
 DEFAULT_TREAT_NOISE_AS_FAMILY = True
-# SCAN_CACHE_PATH：扫描缓存路径；用途：避免重复计算；推荐值：项目根/scan_cache.json
-SCAN_CACHE_PATH = os.path.join(PROJECT_ROOT, 'scan_cache.json')
-# SCAN_OUTPUT_DIR：扫描结果输出目录；用途：保存 JSON/CSV 结果；推荐值：scan_results
-SCAN_OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'scan_results')
-# PE_DIM_SUMMARY_DATASET：数据集 PE 维度摘要；用途：记录数据集特征分布；推荐值：scan_results/pe_dim_summary_dataset.json
+# SCAN_CACHE_PATH：扫描缓存路径；用途：避免重复计算；推荐值：resources/weights_cluster_eval/eval/scan_cache.json
+SCAN_CACHE_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'scan_cache.json')
+# SCAN_OUTPUT_DIR：扫描结果输出目录；用途：保存 JSON/CSV 结果；推荐值：resources/weights_cluster_eval/eval/scan_results
+SCAN_OUTPUT_DIR = os.path.join(MODEL_EVAL_FIG_DIR, 'scan_results')
+# PE_DIM_SUMMARY_DATASET：数据集 PE 维度摘要；用途：记录数据集特征分布；推荐值：resources/weights_cluster_eval/eval/scan_results/pe_dim_summary_dataset.json
 PE_DIM_SUMMARY_DATASET = os.path.join(SCAN_OUTPUT_DIR, 'pe_dim_summary_dataset.json')
-# PE_DIM_SUMMARY_INCREMENTAL：增量数据 PE 维度摘要；用途：记录增量特征分布；推荐值：scan_results/pe_dim_summary_incremental.json
+# PE_DIM_SUMMARY_INCREMENTAL：增量数据 PE 维度摘要；用途：记录增量特征分布；推荐值：resources/weights_cluster_eval/eval/scan_results/pe_dim_summary_incremental.json
 PE_DIM_SUMMARY_INCREMENTAL = os.path.join(SCAN_OUTPUT_DIR, 'pe_dim_summary_incremental.json')
-# PE_DIM_SUMMARY_RAW：原始数据 PE 维度摘要；用途：记录原始特征分布；推荐值：scan_results/pe_dim_summary_raw.json
+# PE_DIM_SUMMARY_RAW：原始数据 PE 维度摘要；用途：记录原始特征分布；推荐值：resources/weights_cluster_eval/eval/scan_results/pe_dim_summary_raw.json
 PE_DIM_SUMMARY_RAW = os.path.join(SCAN_OUTPUT_DIR, 'pe_dim_summary_raw.json')
-# HDBSCAN_SAVE_DIR：聚类结果目录；用途：保存标签与可视化；推荐值：hdbscan_cluster_results
-HDBSCAN_SAVE_DIR = os.path.join(PROJECT_ROOT, 'hdbscan_cluster_results')
+# HDBSCAN_SAVE_DIR：聚类结果目录；用途：保存标签与可视化；推荐值：resources/weights_cluster_eval/cluster
+HDBSCAN_SAVE_DIR = os.path.join(RESOURCES_DIR, 'cluster')
 
 
 # 帮助文本（聚类/服务 CLI）：用途：命令行参数说明文字；推荐值：按需维护
@@ -204,21 +206,21 @@ HELP_OUTPUT_PATH = 'Directory to save scan results'
 
 
 # 可视化输出路径：统一保存训练与聚类图表
-# MODEL_EVAL_FIG_DIR：图表输出目录；用途：集中管理报告文件；推荐值：reports
-MODEL_EVAL_FIG_DIR = os.path.join(PROJECT_ROOT, 'reports')
-# MODEL_EVAL_FIG_PATH：模型评估图路径；用途：保存准确率/混淆矩阵等；推荐值：reports/model_evaluation.png
+# MODEL_EVAL_FIG_DIR：图表输出目录；用途：集中管理报告文件；推荐值：resources/weights_cluster_eval/eval
+MODEL_EVAL_FIG_DIR = os.path.join(RESOURCES_DIR, 'eval')
+# MODEL_EVAL_FIG_PATH：模型评估图路径；用途：保存准确率/混淆矩阵等；推荐值：resources/weights_cluster_eval/eval/model_evaluation.png
 MODEL_EVAL_FIG_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'model_evaluation.png')
-# MODEL_EVAL_AUC_PATH：ROC-AUC 曲线路径；用途：评估分类器性能；推荐值：reports/model_auc_curve.png
+# MODEL_EVAL_AUC_PATH：ROC-AUC 曲线路径；用途：评估分类器性能；推荐值：resources/weights_cluster_eval/eval/model_auc_curve.png
 MODEL_EVAL_AUC_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'model_auc_curve.png')
-# ROUTING_EVAL_REPORT_PATH：路由评估报告路径；用途：保存路由系统评估文本；推荐值：reports/routing_evaluation_report.txt
+# ROUTING_EVAL_REPORT_PATH：路由评估报告路径；用途：保存路由系统评估文本；推荐值：resources/weights_cluster_eval/eval/routing_evaluation_report.txt
 ROUTING_EVAL_REPORT_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_evaluation_report.txt')
-# ROUTING_CONFUSION_MATRIX_PATH：路由混淆矩阵路径；用途：保存路由系统混淆矩阵图；推荐值：reports/routing_confusion_matrix.png
+# ROUTING_CONFUSION_MATRIX_PATH：路由混淆矩阵路径；用途：保存路由系统混淆矩阵图；推荐值：resources/weights_cluster_eval/eval/routing_confusion_matrix.png
 ROUTING_CONFUSION_MATRIX_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_confusion_matrix.png')
-# ROUTING_ROC_AUC_PATH：路由 ROC-AUC 曲线路径；用途：评估路由门控性能；推荐值：reports/routing_roc_auc.png
+# ROUTING_ROC_AUC_PATH：路由 ROC-AUC 曲线路径；用途：评估路由门控性能；推荐值：resources/weights_cluster_eval/eval/routing_roc_auc.png
 ROUTING_ROC_AUC_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_roc_auc.png')
-# AUTOML_RESULTS_PATH：AutoML 结果路径；用途：保存调优实验结果；推荐值：reports/automl_comparison.json
+# AUTOML_RESULTS_PATH：AutoML 结果路径；用途：保存调优实验结果；推荐值：resources/weights_cluster_eval/eval/automl_comparison.json
 AUTOML_RESULTS_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'automl_comparison.json')
-# DETECTED_MALICIOUS_PATHS_REPORT_PATH：恶意路径报告路径；用途：记录扫描发现的威胁；推荐值：reports/detected_malicious_paths.txt
+# DETECTED_MALICIOUS_PATHS_REPORT_PATH：恶意路径报告路径；用途：记录扫描发现的威胁；推荐值：resources/weights_cluster_eval/eval/detected_malicious_paths.txt
 DETECTED_MALICIOUS_PATHS_REPORT_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'detected_malicious_paths.txt')
 # SCAN_PRINT_ONLY_MALICIOUS：仅打印恶意样本；用途：简化扫描输出；推荐值：True
 SCAN_PRINT_ONLY_MALICIOUS = True
@@ -255,9 +257,9 @@ PACKED_SECTIONS_RATIO_THRESHOLD = 0.4
 # PACKER_KEYWORD_HITS_THRESHOLD：加壳关键词命中阈值；用途：判定是否加壳；推荐值：0
 PACKER_KEYWORD_HITS_THRESHOLD = 0
 
-# HDBSCAN_CLUSTER_FIG_PATH：聚类可视化路径；用途：保存聚类热图等；推荐值：reports/hdbscan_clustering_visualization.png
+# HDBSCAN_CLUSTER_FIG_PATH：聚类可视化路径；用途：保存聚类热图等；推荐值：resources/weights_cluster_eval/eval/hdbscan_clustering_visualization.png
 HDBSCAN_CLUSTER_FIG_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'hdbscan_clustering_visualization.png')
-# HDBSCAN_PCA_FIG_PATH：聚类 PCA 图路径；用途：PCA 降维可视化；推荐值：reports/hdbscan_clustering_visualization_pca.png
+# HDBSCAN_PCA_FIG_PATH：聚类 PCA 图路径；用途：PCA 降维可视化；推荐值：resources/weights_cluster_eval/eval/hdbscan_clustering_visualization_pca.png
 HDBSCAN_PCA_FIG_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'hdbscan_clustering_visualization_pca.png')
 # 环境变量键：用于在运行时覆盖默认配置
 # ENV_LIGHTGBM_MODEL_PATH：覆盖二分类模型路径；用途：部署时灵活配置；推荐值：SCANNER_LIGHTGBM_MODEL_PATH
@@ -301,6 +303,12 @@ COLLECT_MAX_FILE_SIZE = SIZE_NORM_MAX
 # 评估与训练细节参数：控制可视化与学习率策略
 # PREDICTION_THRESHOLD：恶意预测阈值；用途：判定样本为恶意的概率下限；推荐值：0.95-0.99
 PREDICTION_THRESHOLD = 0.98
+OHEM_ENABLED = True
+OHEM_RATIO = 0.2
+OHEM_WEIGHT_FACTOR = 3.0
+MISCLASSIFIED_FP_WEIGHT = 3.0
+MISCLASSIFIED_FN_WEIGHT = 2.0
+MISCLASSIFIED_HARD_WEIGHT = 1.5
 # VIS_SAMPLE_SIZE：可视化采样数；用途：绘图子样本大小；推荐值：5000-20000（默认 10000）
 VIS_SAMPLE_SIZE = 20000
 # VIS_TSNE_PERPLEXITY：t-SNE 困惑度；用途：嵌入稳定性与结构；推荐值：30（10-50）
@@ -615,7 +623,7 @@ def extract_statistical_features(byte_sequence, pe_features, orig_length=None):
 
 _register_embedded("features.extractor_save", r'''import numpy as np
 from features.extractor_in_memory import extract_features_in_memory
-from config.config import DEFAULT_MAX_FILE_SIZE
+from config.config import DEFAULT_MAX_FILE_SIZE, PE_FEATURE_VECTOR_DIM
 
 def process_file_directory(input_file_path, output_file_path, max_file_size=DEFAULT_MAX_FILE_SIZE):
     byte_sequence, pe_features, orig_length = extract_features_in_memory(input_file_path, max_file_size)
@@ -636,6 +644,8 @@ from config.config import PROJECT_ROOT, DEFAULT_MAX_FILE_SIZE, ENTROPY_BLOCK_SIZ
 _NATIVE_DLL = None
 _NATIVE_DLL_READY = False
 _NATIVE_DLL_LOCK = threading.Lock()
+NATIVE_BATCH_SIZE = 256
+NATIVE_BATCH_THREADS = 12
 
 def _native_dll_candidates():
     env_path = os.getenv('KVD_FEATURE_DLL')
@@ -669,6 +679,16 @@ def _load_native_dll():
                 dll = ctypes.CDLL(candidate)
                 dll.kvd_extract_pe_features.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
                 dll.kvd_extract_pe_features.restype = ctypes.c_int
+                if hasattr(dll, 'kvd_extract_pe_features_batch'):
+                    dll.kvd_extract_pe_features_batch.argtypes = [
+                        ctypes.POINTER(ctypes.c_char_p),
+                        ctypes.c_size_t,
+                        ctypes.POINTER(ctypes.c_float),
+                        ctypes.c_size_t,
+                        ctypes.POINTER(ctypes.c_int),
+                        ctypes.c_uint
+                    ]
+                    dll.kvd_extract_pe_features_batch.restype = ctypes.c_int
                 _NATIVE_DLL = dll
                 _NATIVE_DLL_READY = True
                 return _NATIVE_DLL
@@ -692,6 +712,60 @@ def _extract_combined_pe_features_native(file_path):
         return np.ctypeslib.as_array(out_buf).astype(np.float32, copy=True)
     except Exception:
         return None
+
+def extract_combined_pe_features_batch_native(file_paths, thread_count=NATIVE_BATCH_THREADS):
+    if not file_paths:
+        return [], []
+    dll = _load_native_dll()
+    if dll is None or not hasattr(dll, 'kvd_extract_pe_features_batch'):
+        vectors = []
+        status = []
+        for p in file_paths:
+            v = _extract_combined_pe_features_native(p)
+            if v is None:
+                vectors.append(np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32))
+                status.append(-2)
+            else:
+                vectors.append(v)
+                status.append(0)
+        return vectors, status
+    actual_threads = thread_count if thread_count and thread_count > 0 else NATIVE_BATCH_THREADS
+    vectors = []
+    status = []
+    for start in range(0, len(file_paths), NATIVE_BATCH_SIZE):
+        batch_paths = file_paths[start:start + NATIVE_BATCH_SIZE]
+        valid_paths = []
+        for p in batch_paths:
+            valid_paths.append(validate_path(p) if p else None)
+        encoded = []
+        for p in valid_paths:
+            encoded.append(p.encode('utf-8') if p else None)
+        path_array = (ctypes.c_char_p * len(encoded))(*encoded)
+        out_buf = (ctypes.c_float * (len(encoded) * PE_FEATURE_VECTOR_DIM))()
+        out_status = (ctypes.c_int * len(encoded))()
+        rc = dll.kvd_extract_pe_features_batch(
+            path_array,
+            len(encoded),
+            out_buf,
+            PE_FEATURE_VECTOR_DIM,
+            out_status,
+            actual_threads
+        )
+        if rc != 0:
+            for p in batch_paths:
+                v = _extract_combined_pe_features_native(p)
+                if v is None:
+                    vectors.append(np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32))
+                    status.append(-2)
+                else:
+                    vectors.append(v)
+                    status.append(0)
+            continue
+        flat = np.ctypeslib.as_array(out_buf).astype(np.float32, copy=True)
+        flat = flat.reshape((len(encoded), PE_FEATURE_VECTOR_DIM))
+        vectors.extend([flat[i].copy() for i in range(len(encoded))])
+        status.extend([int(out_status[i]) for i in range(len(encoded))])
+    return vectors, status
 
 def calculate_byte_entropy(byte_sequence, block_size=ENTROPY_BLOCK_SIZE):
     if byte_sequence is None or len(byte_sequence) == 0:
@@ -1446,56 +1520,15 @@ def extract_combined_pe_features(file_path):
     native_vector = _extract_combined_pe_features_native(file_path)
     if native_vector is not None and native_vector.shape[0] == PE_FEATURE_VECTOR_DIM:
         return native_vector
-    lightweight_features = extract_lightweight_pe_features(file_path)
-    enhanced_features = extract_enhanced_pe_features(file_path)
-    file_attrs = extract_file_attributes(file_path)
-    all_features = {}
-    all_features.update(enhanced_features)
-    all_features.update(file_attrs)
-    combined_vector = np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32)
-    combined_vector[:LIGHTWEIGHT_FEATURE_DIM] = lightweight_features * LIGHTWEIGHT_FEATURE_SCALE
-    feature_order = list(PE_FEATURE_ORDER)
-    for sec in COMMON_SECTIONS:
-        feature_order.append(f'has_{sec}_section')
-    feature_order.extend([
-        'has_signature','signature_size','signature_has_signing_time','version_info_present','company_name_len','product_name_len','file_version_len','original_filename_len',
-        'has_upx_section','has_mpress_section','has_aspack_section','has_themida_section','timestamp','timestamp_year'
-    ])
-    for i, key in enumerate(feature_order):
-        if 256 + i >= PE_FEATURE_VECTOR_DIM:
-            break
-        if key in all_features:
-            val = all_features[key]
-            if key == 'log_size' and isinstance(val, (int, float)):
-                val = val / np.log(SIZE_NORM_MAX)
-            elif 'size' in key and isinstance(val, (int, float)):
-                val = val / SIZE_NORM_MAX
-            elif key == 'timestamp' and isinstance(val, (int, float)):
-                val = val / TIMESTAMP_MAX
-            elif key == 'timestamp_year' and isinstance(val, (int, float)):
-                val = (val - TIMESTAMP_YEAR_BASE) / (TIMESTAMP_YEAR_MAX - TIMESTAMP_YEAR_BASE)
-            elif key.startswith('has_') and isinstance(val, (int, float)):
-                val = float(val)
-            combined_vector[256 + i] = val * 0.8 if isinstance(val, (int, float)) else 0
-    norm = np.linalg.norm(combined_vector)
-    if norm > 0 and not np.isnan(norm):
-        combined_vector /= norm
-    else:
-        combined_vector = np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32)
-    try:
-        mapped_keys = min(len(feature_order), PE_FEATURE_VECTOR_DIM - LIGHTWEIGHT_FEATURE_DIM)
-        truncated_flag = 1 if len(feature_order) > (PE_FEATURE_VECTOR_DIM - LIGHTWEIGHT_FEATURE_DIM) else 0
-        padded_flag = 1 if len(feature_order) < (PE_FEATURE_VECTOR_DIM - LIGHTWEIGHT_FEATURE_DIM) else 0
-        #print(f"[+] PE特征维度={PE_FEATURE_VECTOR_DIM}，已映射键数={mapped_keys}，截断={truncated_flag}，填充={padded_flag}")
-    except Exception:
-        pass
-    return combined_vector
+    return None
 
 def extract_features_in_memory(input_file_path, max_file_size=DEFAULT_MAX_FILE_SIZE):
     byte_sequence, orig_len = extract_byte_sequence(input_file_path, max_file_size)
     if byte_sequence is None:
         return None, None, 0
     pe_features = extract_combined_pe_features(input_file_path)
+    if pe_features is None:
+        return None, None, 0
     return byte_sequence, pe_features, orig_len
 ''')
 
@@ -1957,23 +1990,25 @@ def warmup_scheduler(warmup_rounds=WARMUP_ROUNDS, start_lr=WARMUP_START_LR, targ
                  print(f"[*] Warmup: Iteration {env.iteration}, LR: {lr:.6f}")
     return callback
 
-def train_lightgbm_model(X_train, y_train, X_val, y_val, false_positive_files=None, files_train=None, iteration=1, num_boost_round=5000, init_model=None, params_override=None):
+def train_lightgbm_model(X_train, y_train, X_val, y_val, false_positive_files=None, files_train=None, iteration=1, num_boost_round=5000, init_model=None, params_override=None, sample_weights=None):
     print(f"[*] Training LightGBM model (Round {iteration})...")
-    train_data = lgb.Dataset(X_train, label=y_train)
-    val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+    combined_weights = np.ones(len(X_train), dtype=np.float32)
+    if sample_weights is not None:
+        sample_weights = np.asarray(sample_weights, dtype=np.float32)
+        if sample_weights.shape[0] == len(combined_weights):
+            combined_weights = np.maximum(combined_weights, sample_weights)
     if false_positive_files is not None and files_train is not None:
         print(f"[*] Detected {len(false_positive_files)} false positive samples, increasing their training weights")
-        weights = np.ones(len(X_train), dtype=np.float32)
         false_positive_count = 0
         weight_factor = min(FP_WEIGHT_BASE + iteration * FP_WEIGHT_GROWTH_PER_ITER, FP_WEIGHT_MAX)
         print(f"[*] Current false positive weight factor: {weight_factor}")
         for i, file in enumerate(files_train):
             if file in false_positive_files:
-                weights[i] = weight_factor
+                combined_weights[i] = max(combined_weights[i], weight_factor)
                 false_positive_count += 1
         print(f"[+] Identified {false_positive_count} false positive samples, adjusted weights")
-        train_data = lgb.Dataset(X_train, label=y_train, weight=weights)
-        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+    train_data = lgb.Dataset(X_train, label=y_train, weight=combined_weights)
+    val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
     learning_rate = DEFAULT_LIGHTGBM_LEARNING_RATE
     num_leaves = DEFAULT_LIGHTGBM_NUM_LEAVES
     feature_fraction = LIGHTGBM_FEATURE_FRACTION
@@ -1989,6 +2024,11 @@ def train_lightgbm_model(X_train, y_train, X_val, y_val, false_positive_files=No
         bagging_freq = params_override.get('bagging_freq', bagging_freq)
         min_gain_to_split = params_override.get('min_gain_to_split', min_gain_to_split)
         min_data_in_leaf = params_override.get('min_data_in_leaf', min_data_in_leaf)
+    positive_count = float(np.sum(y_train == 1))
+    negative_count = float(np.sum(y_train == 0))
+    scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
+    if params_override:
+        scale_pos_weight = float(params_override.get('scale_pos_weight', scale_pos_weight))
     params = {
         'objective': 'binary',
         'metric': 'binary_logloss',
@@ -2000,6 +2040,7 @@ def train_lightgbm_model(X_train, y_train, X_val, y_val, false_positive_files=No
         'bagging_freq': bagging_freq,
         'min_gain_to_split': min_gain_to_split,
         'min_data_in_leaf': min_data_in_leaf,
+        'scale_pos_weight': scale_pos_weight,
         'verbose': -1,
         'num_threads': min(multiprocessing.cpu_count(), LIGHTGBM_NUM_THREADS_MAX)
     }
@@ -2062,8 +2103,8 @@ def export_family_classifier(pkl_path: Path, out_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="hdbscan_cluster_results/family_classifier.pkl")
-    parser.add_argument("--output", default="hdbscan_cluster_results/family_classifier.json")
+    parser.add_argument("--input", default="resources/weights_cluster_eval/cluster/family_classifier.pkl")
+    parser.add_argument("--output", default="resources/weights_cluster_eval/cluster/family_classifier.json")
     args = parser.parse_args()
 
     export_family_classifier(Path(args.input), Path(args.output))
@@ -2075,12 +2116,16 @@ if __name__ == "__main__":
 
 _register_embedded("training.data_loader", r'''import os
 import json
+import concurrent.futures
 import numpy as np
 from tqdm import tqdm
 
 from data.dataset import MalwareDataset
 from features.statistics import extract_statistical_features
-from config.config import DEFAULT_MAX_FILE_SIZE
+from config.config import DEFAULT_MAX_FILE_SIZE, PE_FEATURE_VECTOR_DIM
+
+RAW_EXTRACT_WRITE_WORKERS = 16
+RAW_EXTRACT_COMPRESS_NPZ = False
 
 def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, fast_dev_run=False):
     print("[*] Loading dataset...")
@@ -2207,7 +2252,12 @@ def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_
         return [], []
     print(f"[+] Found {len(all_files)} files in raw file directory")
     try:
-        from features.extractor_save import process_file_directory
+        from features.extractor_in_memory import (
+            extract_byte_sequence,
+            extract_combined_pe_features_batch_native,
+            NATIVE_BATCH_SIZE,
+            NATIVE_BATCH_THREADS,
+        )
         print("[+] Successfully imported feature extraction module")
     except ImportError as e:
         print(f"[!] Failed to import feature extraction module: {e}")
@@ -2237,19 +2287,58 @@ def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_
     print("[*] Starting feature extraction...")
     success_count = 0
     from tqdm import tqdm
-    for i, (input_file, output_file) in enumerate(tqdm(zip(all_files, output_files), total=len(all_files), desc="Feature extraction")):
-        try:
-            process_file_directory(input_file, output_file, max_file_size)
-            success_count += 1
-        except Exception as e:
-            print(f"[!] Error processing file {input_file}: {e}")
-            if output_file in output_files:
-                idx = output_files.index(output_file)
-                output_files.pop(idx)
-                labels.pop(idx)
+    successful_output_files = []
+    successful_labels = []
+    write_workers = RAW_EXTRACT_WRITE_WORKERS
+    compress_npz = RAW_EXTRACT_COMPRESS_NPZ
+    for batch_start in tqdm(range(0, len(all_files), NATIVE_BATCH_SIZE), total=(len(all_files) + NATIVE_BATCH_SIZE - 1) // NATIVE_BATCH_SIZE, desc="Feature extraction"):
+        batch_end = min(batch_start + NATIVE_BATCH_SIZE, len(all_files))
+        batch_inputs = all_files[batch_start:batch_end]
+        batch_outputs = output_files[batch_start:batch_end]
+        batch_labels = labels[batch_start:batch_end]
+        batch_pe_features, batch_status = extract_combined_pe_features_batch_native(batch_inputs, thread_count=NATIVE_BATCH_THREADS)
+        def _process_one(idx):
+            input_file = batch_inputs[idx]
+            output_file = batch_outputs[idx]
+            byte_sequence, orig_length = extract_byte_sequence(input_file, max_file_size)
+            if byte_sequence is None:
+                raise Exception(f"Failed to extract byte sequence from {input_file}")
+            if idx >= len(batch_status) or batch_status[idx] != 0:
+                raise Exception("skip_unparsable_pe")
+            pe_features = batch_pe_features[idx]
+            if compress_npz:
+                np.savez_compressed(
+                    output_file,
+                    byte_sequence=byte_sequence,
+                    pe_features=pe_features,
+                    orig_length=orig_length,
+                )
+            else:
+                np.savez(
+                    output_file,
+                    byte_sequence=byte_sequence,
+                    pe_features=pe_features,
+                    orig_length=orig_length,
+                )
+            return output_file, batch_labels[idx]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(write_workers, len(batch_inputs))) as executor:
+            futures = [executor.submit(_process_one, idx) for idx in range(len(batch_inputs))]
+            for idx, future in enumerate(futures):
+                input_file = batch_inputs[idx]
+                try:
+                    output_file, label = future.result()
+                    successful_output_files.append(output_file)
+                    successful_labels.append(label)
+                    success_count += 1
+                except Exception as e:
+                    if str(e) == "skip_unparsable_pe":
+                        continue
+                    print(f"[!] Error processing file {input_file}: {e}")
+                    continue
+    output_files = successful_output_files
+    labels = successful_labels
     print(f"[+] Feature extraction completed: {success_count}/{len(all_files)} files processed successfully")
     try:
-        from config.config import PE_FEATURE_VECTOR_DIM
         count_ok = 0
         count_padded = 0
         count_truncated = 0
@@ -2462,6 +2551,7 @@ def _cv_score(model, X, y, cv_folds, metric):
 
 def _optuna_tune_lgbm(X, y, cv_folds, trials, metric):
     import optuna
+    optuna.logging.set_verbosity(optuna.logging.INFO)
     def objective(trial):
         params = {
             'objective': 'binary',
@@ -2480,8 +2570,13 @@ def _optuna_tune_lgbm(X, y, cv_folds, trials, metric):
         model = lgb.LGBMClassifier(**params)
         score = _cv_score(model, X, y, cv_folds, metric)
         return score
+    def progress_callback(study, trial):
+        best_value = study.best_value if study.best_trial is not None else float('nan')
+        print(f"[*] AutoML(Optuna) 进度: {trial.number + 1}/{trials}, 当前={trial.value:.6f}, 最佳={best_value:.6f}")
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=trials)
+    print(f"[*] AutoML(Optuna) 开始: trials={trials}, cv={cv_folds}, metric={metric}")
+    study.optimize(objective, n_trials=trials, callbacks=[progress_callback])
+    print(f"[+] AutoML(Optuna) 完成: best_value={study.best_value:.6f}")
     best_params = study.best_params
     best_model = lgb.LGBMClassifier(
         objective='binary',
@@ -2523,9 +2618,15 @@ def _hyperopt_tune_lgbm(X, y, cv_folds, trials, metric):
         model = lgb.LGBMClassifier(**params_cast)
         score = _cv_score(model, X, y, cv_folds, metric)
         loss = -score
+        current_trial = len(trials_obj.trials) + 1
+        best_loss = min([t['result']['loss'] for t in trials_obj.trials], default=loss)
+        print(f"[*] AutoML(Hyperopt) 进度: {current_trial}/{trials}, 当前={-loss:.6f}, 最佳={-best_loss:.6f}")
         return {'loss': loss, 'status': STATUS_OK}
     trials_obj = Trials()
+    print(f"[*] AutoML(Hyperopt) 开始: trials={trials}, cv={cv_folds}, metric={metric}")
     best = fmin(fn=objective, space=space, algo=tpe.suggest, max_evals=trials, trials=trials_obj)
+    final_best_loss = min([t['result']['loss'] for t in trials_obj.trials], default=0.0)
+    print(f"[+] AutoML(Hyperopt) 完成: best_value={-final_best_loss:.6f}")
     best_params = {
         'num_leaves': int(best['num_leaves']),
         'learning_rate': float(best['learning_rate']),
@@ -2547,9 +2648,12 @@ def _hyperopt_tune_lgbm(X, y, cv_folds, trials, metric):
     return best_score, best_params
 
 def run_cross_test(method=AUTOML_METHOD_DEFAULT, trials=AUTOML_TRIALS_DEFAULT, cv_folds=AUTOML_CV_FOLDS_DEFAULT, metric=AUTOML_METRIC_DEFAULT, use_existing_features=True, max_file_size=DEFAULT_MAX_FILE_SIZE, fast_dev_run=False):
+    print(f"[*] AutoML配置: method={method}, trials={trials}, cv={cv_folds}, metric={metric}, use_existing_features={use_existing_features}")
     X, y = _load_data(use_existing_features=use_existing_features, max_file_size=max_file_size, fast_dev_run=fast_dev_run)
+    print(f"[*] AutoML数据规模: 样本数={len(y)}, 特征维度={X.shape[1]}")
     baseline_model = _make_baseline_model()
     baseline_score = _cv_score(baseline_model, X, y, cv_folds, metric)
+    print(f"[*] AutoML基线分数({metric}): {baseline_score:.6f}")
     
     # 计算基线的额外指标
     baseline_additional = {}
@@ -2562,6 +2666,7 @@ def run_cross_test(method=AUTOML_METHOD_DEFAULT, trials=AUTOML_TRIALS_DEFAULT, c
         tuned_score, best_params = _optuna_tune_lgbm(X, y, cv_folds, trials, metric)
     elif method == 'hyperopt':
         tuned_score, best_params = _hyperopt_tune_lgbm(X, y, cv_folds, trials, metric)
+    print(f"[+] AutoML调优分数({metric}): {tuned_score:.6f}")
     
     # 计算调优后的额外指标
     best_model = lgb.LGBMClassifier(
@@ -4208,16 +4313,139 @@ if __name__ == "__main__":
 
 _register_embedded("pretrain", r'''import os
 import argparse
+import json
+import pickle
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score
 from training.data_loader import load_dataset, extract_features_from_raw_files, load_incremental_dataset
 from training.feature_io import save_features_to_pickle
 from training.train_lightgbm import train_lightgbm_model
 from training.evaluate import evaluate_model
 from training.model_io import save_model, load_existing_model
 from training.incremental import incremental_train_lightgbm_model
-from config.config import PROCESSED_DATA_DIR, METADATA_FILE, SAVED_MODEL_DIR, MODEL_PATH, FEATURES_PKL_PATH, DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS, DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS, HELP_MAX_FILE_SIZE, HELP_FAST_DEV_RUN, HELP_SAVE_FEATURES, HELP_FINETUNE_ON_FALSE_POSITIVES, HELP_INCREMENTAL_TRAINING, HELP_INCREMENTAL_DATA_DIR, HELP_INCREMENTAL_RAW_DATA_DIR, HELP_FILE_EXTENSIONS, HELP_LABEL_INFERENCE, HELP_NUM_BOOST_ROUND, HELP_INCREMENTAL_ROUNDS, HELP_INCREMENTAL_EARLY_STOPPING, HELP_MAX_FINETUNE_ITERATIONS, HELP_USE_EXISTING_FEATURES
+from config.config import PROCESSED_DATA_DIR, METADATA_FILE, SAVED_MODEL_DIR, MODEL_PATH, FEATURES_PKL_PATH, DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS, DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS, HELP_MAX_FILE_SIZE, HELP_FAST_DEV_RUN, HELP_SAVE_FEATURES, HELP_FINETUNE_ON_FALSE_POSITIVES, HELP_INCREMENTAL_TRAINING, HELP_INCREMENTAL_DATA_DIR, HELP_INCREMENTAL_RAW_DATA_DIR, HELP_FILE_EXTENSIONS, HELP_LABEL_INFERENCE, HELP_NUM_BOOST_ROUND, HELP_INCREMENTAL_ROUNDS, HELP_INCREMENTAL_EARLY_STOPPING, HELP_MAX_FINETUNE_ITERATIONS, HELP_USE_EXISTING_FEATURES, FEATURE_SCALER_PATH, THRESHOLD_REPORT_PATH, HDBSCAN_SAVE_DIR, PREDICTION_THRESHOLD, OHEM_ENABLED, OHEM_RATIO, OHEM_WEIGHT_FACTOR, MISCLASSIFIED_FP_WEIGHT, MISCLASSIFIED_FN_WEIGHT, MISCLASSIFIED_HARD_WEIGHT
+
+
+def _normalize_name(name):
+    return str(name).replace('\\', '/').lower()
+
+
+def _latest_sample_report(pattern):
+    base_dir = Path(HDBSCAN_SAVE_DIR)
+    files = sorted(base_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def _load_samples(report_path):
+    if report_path is None or not report_path.exists():
+        return []
+    try:
+        return json.loads(report_path.read_text(encoding='utf-8'))
+    except Exception:
+        return []
+
+
+def _build_sample_weight_map():
+    weight_map = {}
+    hard_report = _latest_sample_report('hard_samples_*.json')
+    fp_report = _latest_sample_report('false_positives_*.json')
+    fn_report = _latest_sample_report('false_negitives_*.json')
+    for item in _load_samples(hard_report):
+        sid = _normalize_name(item.get('sample_id', ''))
+        if sid:
+            weight_map[sid] = max(weight_map.get(sid, 1.0), float(MISCLASSIFIED_HARD_WEIGHT))
+    for item in _load_samples(fp_report):
+        sid = _normalize_name(item.get('sample_id', ''))
+        if sid:
+            weight_map[sid] = max(weight_map.get(sid, 1.0), float(MISCLASSIFIED_FP_WEIGHT))
+    for item in _load_samples(fn_report):
+        sid = _normalize_name(item.get('sample_id', ''))
+        if sid:
+            weight_map[sid] = max(weight_map.get(sid, 1.0), float(MISCLASSIFIED_FN_WEIGHT))
+    return weight_map
+
+
+def _build_train_weights(files_train, weight_map):
+    weights = np.ones(len(files_train), dtype=np.float32)
+    for i, fname in enumerate(files_train):
+        normalized = _normalize_name(fname)
+        base_name = _normalize_name(Path(str(fname)).name)
+        if normalized in weight_map:
+            weights[i] = max(weights[i], weight_map[normalized])
+        if base_name in weight_map:
+            weights[i] = max(weights[i], weight_map[base_name])
+    return weights
+
+
+def _apply_ohem_weights(model, X_train, y_train, base_weights):
+    if not OHEM_ENABLED or len(X_train) == 0:
+        return base_weights
+    best_iteration = getattr(model, 'best_iteration', None)
+    if isinstance(best_iteration, int) and best_iteration > 0:
+        train_proba = model.predict(X_train, num_iteration=best_iteration)
+    else:
+        train_proba = model.predict(X_train)
+    hardness = np.where(y_train == 1, 1 - train_proba, train_proba)
+    topk = int(max(1, round(len(hardness) * float(OHEM_RATIO))))
+    hard_idx = np.argsort(hardness)[-topk:]
+    updated = base_weights.copy()
+    updated[hard_idx] = np.maximum(updated[hard_idx], updated[hard_idx] * float(OHEM_WEIGHT_FACTOR))
+    return updated
+
+
+def _binary_metrics(y_true, y_pred):
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    accuracy = accuracy_score(y_true, y_pred)
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+    return {
+        'accuracy': float(accuracy),
+        'fpr': float(fpr),
+        'fnr': float(fnr),
+        'fp': int(fp),
+        'fn': int(fn),
+        'tn': int(tn),
+        'tp': int(tp)
+    }
+
+
+def _optimize_threshold(y_true, y_proba, baseline_threshold):
+    baseline_pred = (y_proba > baseline_threshold).astype(int)
+    baseline = _binary_metrics(y_true, baseline_pred)
+    best_threshold = baseline_threshold
+    best_metric = baseline
+    for threshold in np.linspace(0.50, 0.995, 200):
+        pred = (y_proba > threshold).astype(int)
+        metric = _binary_metrics(y_true, pred)
+        if metric['accuracy'] + 1e-12 < baseline['accuracy']:
+            continue
+        target_fpr = baseline['fpr'] * 0.9 if baseline['fpr'] > 0 else 0.0
+        target_fnr = baseline['fnr'] * 0.9 if baseline['fnr'] > 0 else 0.0
+        fpr_ok = metric['fpr'] <= target_fpr + 1e-12 if baseline['fpr'] > 0 else metric['fpr'] <= baseline['fpr'] + 1e-12
+        fnr_ok = metric['fnr'] <= target_fnr + 1e-12 if baseline['fnr'] > 0 else metric['fnr'] <= baseline['fnr'] + 1e-12
+        if fpr_ok and fnr_ok:
+            score = metric['fpr'] + metric['fnr']
+            best_score = best_metric['fpr'] + best_metric['fnr']
+            if score < best_score - 1e-12:
+                best_metric = metric
+                best_threshold = float(threshold)
+    if best_threshold == baseline_threshold:
+        for threshold in np.linspace(0.50, 0.995, 200):
+            pred = (y_proba > threshold).astype(int)
+            metric = _binary_metrics(y_true, pred)
+            if metric['accuracy'] + 1e-12 < baseline['accuracy']:
+                continue
+            score = 0.6 * metric['fpr'] + 0.4 * metric['fnr']
+            best_score = 0.6 * best_metric['fpr'] + 0.4 * best_metric['fnr']
+            if score < best_score - 1e-12:
+                best_metric = metric
+                best_threshold = float(threshold)
+    return best_threshold, baseline, best_metric
 
 
 def main(args):
@@ -4294,6 +4522,15 @@ def main(args):
     print(f"    Class distribution - Train: Benign={np.sum(y_train==0)}, Malicious={np.sum(y_train==1)}")
     print(f"    Class distribution - Val: Benign={np.sum(y_val==0)}, Malicious={np.sum(y_val==1)}")
     print(f"    Class distribution - Test: Benign={np.sum(y_test==0)}, Malicious={np.sum(y_test==1)}")
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_val = scaler.transform(X_val)
+    X_test = scaler.transform(X_test)
+    with open(FEATURE_SCALER_PATH, 'wb') as f:
+        pickle.dump(scaler, f)
+    print(f"[+] Feature scaler saved to: {FEATURE_SCALER_PATH}")
+    weight_map = _build_sample_weight_map()
+    sample_weights = _build_train_weights(files_train, weight_map)
 
     existing_model = None
     if args.incremental_training:
@@ -4310,7 +4547,23 @@ def main(args):
             early_stopping_rounds=args.incremental_early_stopping
         )
     else:
-        model = train_lightgbm_model(X_train, y_train, X_val, y_val, iteration=1, num_boost_round=args.num_boost_round, params_override=getattr(args, 'override_params', None))
+        model = train_lightgbm_model(
+            X_train, y_train, X_val, y_val,
+            iteration=1,
+            num_boost_round=args.num_boost_round,
+            params_override=getattr(args, 'override_params', None),
+            sample_weights=sample_weights
+        )
+        if OHEM_ENABLED:
+            sample_weights = _apply_ohem_weights(model, X_train, y_train, sample_weights)
+            model = train_lightgbm_model(
+                X_train, y_train, X_val, y_val,
+                iteration=2,
+                num_boost_round=args.num_boost_round,
+                init_model=model,
+                params_override=getattr(args, 'override_params', None),
+                sample_weights=sample_weights
+            )
 
     max_finetune_iterations = args.max_finetune_iterations
     finetune_iteration = 0
@@ -4325,7 +4578,8 @@ def main(args):
                                        iteration=finetune_iteration+1, 
                                        num_boost_round=args.num_boost_round,
                                        init_model=model,
-                                       params_override=getattr(args, 'override_params', None))
+                                       params_override=getattr(args, 'override_params', None),
+                                       sample_weights=sample_weights)
 
             if finetune_iteration >= max_finetune_iterations:
 
@@ -4357,7 +4611,8 @@ def main(args):
                                            finetune_iteration + targeted_iteration,
                                            num_boost_round=args.num_boost_round,
                                            init_model=model,
-                                           params_override=getattr(args, 'override_params', None))
+                                           params_override=getattr(args, 'override_params', None),
+                                           sample_weights=sample_weights)
 
                 print(f"\n[*] Evaluating after round {targeted_iteration} targeted reinforcement training...")
                 test_accuracy, false_positives = evaluate_model(model, X_test, y_test, files_test)
@@ -4380,26 +4635,46 @@ def main(args):
 
             print("    To enable reinforcement training, use the --finetune-on-false-positives parameter")
         try:
-            y_pred_proba = model.predict(X_test, num_iteration=model.best_iteration)
-            thresholds = np.arange(0.90, 0.99, 0.01)
-            from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score
-            print("\n[*] Threshold sensitivity (0.90–0.98):")
+            best_iteration = getattr(model, 'best_iteration', None)
+            if isinstance(best_iteration, int) and best_iteration > 0:
+                y_val_proba = model.predict(X_val, num_iteration=best_iteration)
+                y_pred_proba = model.predict(X_test, num_iteration=best_iteration)
+            else:
+                y_val_proba = model.predict(X_val)
+                y_pred_proba = model.predict(X_test)
+            selected_threshold, baseline_metrics, optimized_metrics = _optimize_threshold(y_val, y_val_proba, PREDICTION_THRESHOLD)
+            y_pred_selected = (y_pred_proba > selected_threshold).astype(int)
+            selected_metrics = _binary_metrics(y_test, y_pred_selected)
+            false_positives = [files_test[i] for i in np.where((y_pred_selected == 1) & (y_test == 0))[0]]
+            print(f"[*] Selected threshold: {selected_threshold:.4f}")
+            print(f"[*] Validation baseline metrics: {baseline_metrics}")
+            print(f"[*] Validation optimized metrics: {optimized_metrics}")
+            print(f"[*] Test metrics with selected threshold: {selected_metrics}")
+            threshold_report = {
+                'selected_threshold': float(selected_threshold),
+                'validation_baseline': baseline_metrics,
+                'validation_optimized': optimized_metrics,
+                'test_metrics': selected_metrics
+            }
+            os.makedirs(os.path.dirname(THRESHOLD_REPORT_PATH), exist_ok=True)
+            with open(THRESHOLD_REPORT_PATH, 'w', encoding='utf-8') as f:
+                json.dump(threshold_report, f, ensure_ascii=False, indent=2)
+            print(f"[+] Threshold report saved to: {THRESHOLD_REPORT_PATH}")
+            thresholds = sorted(set([float(selected_threshold)] + list(np.arange(0.90, 0.99, 0.01))))
+            print("\n[*] Threshold sensitivity (0.90–0.98 + selected):")
             for t in thresholds:
                 y_pred_t = (y_pred_proba > t).astype(int)
-                cm = confusion_matrix(y_test, y_pred_t)
-                if cm.shape == (2, 2):
-                    tn, fp, fn, tp = cm.ravel()
-                else:
-                    tn = fp = fn = tp = 0
+                cm = confusion_matrix(y_test, y_pred_t, labels=[0, 1])
+                tn, fp, fn, tp = cm.ravel()
                 acc = accuracy_score(y_test, y_pred_t)
                 pre = precision_score(y_test, y_pred_t, zero_division=0)
                 rec = recall_score(y_test, y_pred_t, zero_division=0)
                 fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
                 tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
                 fp_count = int(fp)
-                print(f"    t={t:.2f} acc={acc:.4f} pre={pre:.4f} rec={rec:.4f} FPR={fpr:.4f} TPR={tpr:.4f} FP={fp_count}")
-        except Exception:
-            pass
+                print(f"    t={t:.4f} acc={acc:.4f} pre={pre:.4f} rec={rec:.4f} FPR={fpr:.4f} TPR={tpr:.4f} FP={fp_count}")
+        except Exception as e:
+            print(f"[!] Threshold optimization failed: {e}")
     else:
 
         print("[*] Test set is empty, skipping model evaluation")
@@ -4861,6 +5136,7 @@ def identify_new_families(files, labels, save_dir, min_family_size=20, treat_noi
     print(f"[+] Identified {len(family_names)} new families")
 
     family_mapping_path = os.path.join(save_dir, 'family_names_mapping.json')
+    os.makedirs(save_dir, exist_ok=True)
     with open(family_mapping_path, 'w', encoding='utf-8') as f:
         json.dump(family_names, f, indent=2, ensure_ascii=False)
 
@@ -4945,16 +5221,19 @@ def main(args):
     if args.explain_discrepancy:
         explain_clustering_discrepancy(malicious_features, cluster_labels)
 
-    try:
-        if len(np.unique(cluster_labels)) > 1 and -1 not in cluster_labels:
-            from sklearn.metrics import silhouette_score, calinski_harabasz_score
-            sil_score = silhouette_score(malicious_features, cluster_labels)
-            ch_score = calinski_harabasz_score(malicious_features, cluster_labels)
-            print(f"\n[*] Clustering quality assessment:")
-            print(f"    Silhouette Score: {sil_score:.4f}")
-            print(f"    Calinski-Harabasz Index: {ch_score:.4f}")
-    except Exception as e:
-        print(f"[!] Unable to calculate clustering quality metrics: {e}")
+    if getattr(args, 'skip_cluster_quality_eval', False):
+        print("[*] Clustering quality assessment skipped")
+    else:
+        try:
+            if len(np.unique(cluster_labels)) > 1 and -1 not in cluster_labels:
+                from sklearn.metrics import silhouette_score, calinski_harabasz_score
+                sil_score = silhouette_score(malicious_features, cluster_labels)
+                ch_score = calinski_harabasz_score(malicious_features, cluster_labels)
+                print(f"\n[*] Clustering quality assessment:")
+                print(f"    Silhouette Score: {sil_score:.4f}")
+                print(f"    Calinski-Harabasz Index: {ch_score:.4f}")
+        except Exception as e:
+            print(f"[!] Unable to calculate clustering quality metrics: {e}")
 
     print("\n[+] HDBSCAN clustering fine-tuning completed!")
     print(f"[*] Processed {len(malicious_files)} malware files")
@@ -4987,6 +5266,8 @@ if __name__ == '__main__':
                        help='Explain why nearby points belong to different clusters')
     parser.add_argument('--treat-noise-as-family', action='store_true', default=DEFAULT_TREAT_NOISE_AS_FAMILY,
                        help='Treat noise points as separate families (if min-family-size is 1, each noise point is unique)')
+    parser.add_argument('--skip-cluster-quality-eval', action='store_true',
+                       help='Skip clustering quality assessment metrics (silhouette and Calinski-Harabasz)')
 
     args = parser.parse_args()
     main(args)
@@ -5004,6 +5285,7 @@ import gzip
 import tempfile
 import shutil
 import argparse
+import pickle
 from models.family_classifier import FamilyClassifier
 from features.extractor_in_memory import extract_features_in_memory
 from config.config import (
@@ -5011,7 +5293,7 @@ from config.config import (
     SCAN_OUTPUT_DIR, HELP_LIGHTGBM_MODEL_PATH, HELP_FAMILY_CLASSIFIER_PATH, 
     HELP_CACHE_FILE, HELP_FILE_PATH, HELP_DIR_PATH, HELP_RECURSIVE, 
     HELP_OUTPUT_PATH, HELP_MAX_FILE_SIZE, ENV_ALLOWED_SCAN_ROOT, PREDICTION_THRESHOLD,
-    GATING_ENABLED, SCAN_PRINT_ONLY_MALICIOUS
+    GATING_ENABLED, SCAN_PRINT_ONLY_MALICIOUS, FEATURE_SCALER_PATH, THRESHOLD_REPORT_PATH
 )
 
 if GATING_ENABLED:
@@ -5056,6 +5338,8 @@ class MalwareScanner:
         self.enable_cache = enable_cache
         self.binary_classifier = None
         self.routing_model = None
+        self.feature_scaler = None
+        self.prediction_threshold = float(PREDICTION_THRESHOLD)
         self.print_only_malicious = SCAN_PRINT_ONLY_MALICIOUS if print_only_malicious is None else bool(print_only_malicious)
         self.print_malicious_paths = SCAN_PRINT_ONLY_MALICIOUS if print_malicious_paths is None else bool(print_malicious_paths)
 
@@ -5083,6 +5367,25 @@ class MalwareScanner:
             self.binary_classifier = lgb.Booster(model_file=model_path)
             self._temp_model_path = model_path if model_path != lightgbm_model_path else None
             self._debug("[+] LightGBM binary classification model loaded")
+        try:
+            if os.path.exists(FEATURE_SCALER_PATH):
+                with open(FEATURE_SCALER_PATH, 'rb') as f:
+                    self.feature_scaler = pickle.load(f)
+                self._debug(f"[+] Feature scaler loaded: {FEATURE_SCALER_PATH}")
+        except Exception as e:
+            self._debug(f"[!] Failed to load feature scaler: {e}")
+            self.feature_scaler = None
+        try:
+            if os.path.exists(THRESHOLD_REPORT_PATH):
+                with open(THRESHOLD_REPORT_PATH, 'r', encoding='utf-8') as f:
+                    threshold_payload = json.load(f)
+                selected = threshold_payload.get('selected_threshold')
+                if selected is not None:
+                    self.prediction_threshold = float(selected)
+                    self._debug(f"[+] Prediction threshold loaded: {self.prediction_threshold:.4f}")
+        except Exception as e:
+            self._debug(f"[!] Failed to load threshold report: {e}")
+            self.prediction_threshold = float(PREDICTION_THRESHOLD)
 
         self._debug("[*] Loading family classifier...")
         self.family_classifier = FamilyClassifier()
@@ -5192,6 +5495,8 @@ class MalwareScanner:
     def _predict_malware_from_features(self, features):
         try:
             feature_vector = features.reshape(1, -1)
+            if self.feature_scaler is not None:
+                feature_vector = self.feature_scaler.transform(feature_vector)
             
             if self.routing_model is not None:
                 predictions, decisions = self.routing_model.predict(feature_vector)
@@ -5201,7 +5506,7 @@ class MalwareScanner:
             else:
                 raise Exception("No model loaded for prediction")
 
-            is_malware = prediction_val > PREDICTION_THRESHOLD
+            is_malware = prediction_val > self.prediction_threshold
             confidence = prediction_val if is_malware else (1 - prediction_val)
 
             return is_malware, confidence
@@ -5211,6 +5516,8 @@ class MalwareScanner:
 
     def _predict_malware_batch(self, features_matrix):
         try:
+            if self.feature_scaler is not None:
+                features_matrix = self.feature_scaler.transform(features_matrix)
             if self.routing_model is not None:
                 predictions, decisions = self.routing_model.predict(features_matrix)
             elif self.binary_classifier is not None:
@@ -5218,7 +5525,7 @@ class MalwareScanner:
             else:
                 raise Exception("No model loaded for prediction")
             
-            is_malware_batch = predictions > PREDICTION_THRESHOLD
+            is_malware_batch = predictions > self.prediction_threshold
             confidence_batch = np.where(is_malware_batch, predictions, 1 - predictions)
             
             return is_malware_batch, confidence_batch
@@ -6934,6 +7241,160 @@ def _serve_ipc_only() -> str:
     asyncio.run(scanner_service.run_ipc_forever())
     return 'ipc'
 
+def _build_feature_importance_dict(model, feature_columns):
+    importance_values = model.feature_importance(importance_type='gain')
+    model_feature_names = list(model.feature_name() or [])
+    if len(model_feature_names) != len(importance_values):
+        model_feature_names = list(feature_columns[:len(importance_values)])
+    feature_importance = {}
+    for i, value in enumerate(importance_values):
+        if i < len(model_feature_names):
+            feature_name = str(model_feature_names[i])
+        elif i < len(feature_columns):
+            feature_name = str(feature_columns[i])
+        else:
+            feature_name = f'feature_{i}'
+        feature_importance[feature_name] = float(value)
+    return feature_importance
+
+def _build_sample_payload(sample_indices, sample_ids, y_true, y_pred, y_pred_proba, feature_importance):
+    payload = []
+    for idx in sample_indices:
+        payload.append({
+            'sample_id': str(sample_ids[idx]),
+            'true_label': int(y_true[idx]),
+            'predicted_label': int(y_pred[idx]),
+            'prediction_probability': float(y_pred_proba[idx]),
+            'feature_importance': feature_importance
+        })
+    return payload
+
+def _write_sample_report(report_path, samples, sample_name, logger):
+    import json
+    try:
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump(samples, f, ensure_ascii=False, indent=2)
+        if not samples:
+            logger.warning(f'{sample_name}为空，已生成空文件: {report_path}')
+    except Exception as e:
+        logger.warning(f'{sample_name}写入失败，改为空文件: {e}')
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+
+def _export_train_all_sample_reports(logger):
+    import lightgbm as lgb
+    import numpy as np
+    import pandas as pd
+    import pickle
+    from datetime import datetime
+    from sklearn.model_selection import train_test_split
+    from config.config import PREDICTION_THRESHOLD, DEFAULT_TEST_SIZE, DEFAULT_VAL_SIZE, DEFAULT_RANDOM_STATE, FEATURE_SCALER_PATH
+
+    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    output_dir = HDBSCAN_SAVE_DIR
+    os.makedirs(output_dir, exist_ok=True)
+    hard_path = os.path.join(output_dir, f'hard_samples_{timestamp}.json')
+    fp_path = os.path.join(output_dir, f'false_positives_{timestamp}.json')
+    fn_path = os.path.join(output_dir, f'false_negitives_{timestamp}.json')
+
+    hard_samples = []
+    false_positive_samples = []
+    false_negative_samples = []
+    full_hard_count = 0
+    full_fp_count = 0
+    full_fn_count = 0
+    test_hard_count = 0
+    test_fp_count = 0
+    test_fn_count = 0
+    try:
+        confidence_threshold = 0.70
+        df = pd.read_pickle(FEATURES_PKL_PATH)
+        required_columns = {'filename', 'label'}
+        if not required_columns.issubset(set(df.columns)):
+            raise ValueError(f'特征文件缺少必要列: {required_columns}')
+        feature_columns = [col for col in df.columns if col.startswith('feature_')]
+        if not feature_columns:
+            raise ValueError('特征文件中未找到有效特征列')
+        sample_ids = df['filename'].tolist()
+        y_true = df['label'].astype(int).to_numpy()
+        X = df[feature_columns].to_numpy()
+        if os.path.exists(FEATURE_SCALER_PATH):
+            with open(FEATURE_SCALER_PATH, 'rb') as f:
+                export_scaler = pickle.load(f)
+            X = export_scaler.transform(X)
+            logger.info(f'样本导出使用标准化器: {FEATURE_SCALER_PATH}')
+        else:
+            logger.warning(f'样本导出未找到标准化器，使用原始特征: {FEATURE_SCALER_PATH}')
+
+        model = lgb.Booster(model_file=MODEL_PATH)
+        best_iteration = getattr(model, 'best_iteration', None)
+        if isinstance(best_iteration, int) and best_iteration > 0:
+            y_pred_proba = model.predict(X, num_iteration=best_iteration)
+        else:
+            y_pred_proba = model.predict(X)
+        y_pred = (y_pred_proba > PREDICTION_THRESHOLD).astype(int)
+        confidence = np.maximum(y_pred_proba, 1 - y_pred_proba)
+        hard_mask = confidence < confidence_threshold
+        false_positive_mask = (y_true == 0) & (y_pred == 1)
+        false_negative_mask = (y_true == 1) & (y_pred == 0)
+        full_hard_count = int(np.sum(hard_mask))
+        full_fp_count = int(np.sum(false_positive_mask))
+        full_fn_count = int(np.sum(false_negative_mask))
+
+        total_count = len(y_true)
+        all_indices = np.arange(total_count)
+        if total_count > 10:
+            stratify_label = y_true if len(np.unique(y_true)) > 1 else None
+            idx_temp, idx_test, y_temp, _, _, _ = train_test_split(
+                all_indices, y_true, sample_ids, test_size=DEFAULT_TEST_SIZE,
+                random_state=DEFAULT_RANDOM_STATE, stratify=stratify_label
+            )
+            if len(idx_temp) > 5:
+                stratify_temp = y_temp if len(np.unique(y_temp)) > 1 else None
+                _, _, _, _, _, _ = train_test_split(
+                    idx_temp, y_temp, [sample_ids[i] for i in idx_temp], test_size=DEFAULT_VAL_SIZE,
+                    random_state=DEFAULT_RANDOM_STATE, stratify=stratify_temp
+                )
+        else:
+            idx_test = all_indices
+        test_mask = np.zeros(total_count, dtype=bool)
+        test_mask[idx_test] = True
+        test_hard_count = int(np.sum(hard_mask & test_mask))
+        test_fp_count = int(np.sum(false_positive_mask & test_mask))
+        test_fn_count = int(np.sum(false_negative_mask & test_mask))
+
+        feature_importance = _build_feature_importance_dict(model, feature_columns)
+        hard_samples = _build_sample_payload(np.where(hard_mask)[0], sample_ids, y_true, y_pred, y_pred_proba, feature_importance)
+        false_positive_samples = _build_sample_payload(np.where(false_positive_mask)[0], sample_ids, y_true, y_pred, y_pred_proba, feature_importance)
+        false_negative_samples = _build_sample_payload(np.where(false_negative_mask)[0], sample_ids, y_true, y_pred, y_pred_proba, feature_importance)
+    except Exception as e:
+        logger.warning(f'样本分析阶段失败，已输出空结果文件: {e}')
+
+    _write_sample_report(hard_path, hard_samples, '困难样本', logger)
+    _write_sample_report(fp_path, false_positive_samples, '假阳性样本', logger)
+    _write_sample_report(fn_path, false_negative_samples, '假阴性样本', logger)
+
+    logger.info(f'困难样本文件: {hard_path}')
+    logger.info(f'假阳性样本文件: {fp_path}')
+    logger.info(f'假阴性样本文件: {fn_path}')
+    logger.info(f'全量-困难样本数量: {full_hard_count}')
+    logger.info(f'全量-假阳性样本数量: {full_fp_count}')
+    logger.info(f'全量-假阴性样本数量: {full_fn_count}')
+    logger.info(f'测试集-困难样本数量: {test_hard_count}')
+    logger.info(f'测试集-假阳性样本数量: {test_fp_count}')
+    logger.info(f'测试集-假阴性样本数量: {test_fn_count}')
+    return {
+        'hard_path': hard_path,
+        'false_positive_path': fp_path,
+        'false_negative_path': fn_path,
+        'full_hard_count': full_hard_count,
+        'full_false_positive_count': full_fp_count,
+        'full_false_negative_count': full_fn_count,
+        'test_hard_count': test_hard_count,
+        'test_false_positive_count': test_fp_count,
+        'test_false_negative_count': test_fn_count
+    }
+
 def main():
     logger = get_logger('kolo')
     parser = argparse.ArgumentParser(prog='KoloVirusDetector', description='KoloVirusDetector 项目入口')
@@ -6966,6 +7427,7 @@ def main():
     sp_finetune.add_argument('--plot-pca', action='store_true', help=HELP_PLOT_PCA)
     sp_finetune.add_argument('--explain-discrepancy', action='store_true', help=HELP_EXPLAIN_DISCREPANCY)
     sp_finetune.add_argument('--treat-noise-as-family', action='store_true', default=DEFAULT_TREAT_NOISE_AS_FAMILY, help=HELP_TREAT_NOISE_AS_FAMILY)
+    sp_finetune.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
 
     sp_scan = subs.add_parser('scan', help='单次扫描或目录扫描')
     sp_scan.add_argument('--lightgbm-model-path', type=str, default=MODEL_PATH, help=HELP_LIGHTGBM_MODEL_PATH)
@@ -7004,6 +7466,7 @@ def main():
     sp_train_all = subs.add_parser('train-all', help='一键执行特征提取、模型训练、评估与聚类')
     sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
     sp_train_all.add_argument('--skip-tuning', action='store_true', help=HELP_SKIP_TUNING)
+    sp_train_all.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
     
     sp_autotune = subs.add_parser('auto-tune', help='AutoML超参调优与交叉测试对比')
     sp_autotune.add_argument('--method', type=str, default=AUTOML_METHOD_DEFAULT, choices=['optuna', 'hyperopt'], help=HELP_AUTOML_METHOD)
@@ -7201,9 +7664,11 @@ def main():
                 min_family_size=DEFAULT_MIN_FAMILY_SIZE,
                 plot_pca=False,
                 explain_discrepancy=False,
-                treat_noise_as_family=DEFAULT_TREAT_NOISE_AS_FAMILY
+                treat_noise_as_family=DEFAULT_TREAT_NOISE_AS_FAMILY,
+                skip_cluster_quality_eval=args.skip_cluster_quality_eval
             )
             finetune.main(fine_args)
+            _export_train_all_sample_reports(logger)
             logger.info('训练与聚类流程已完成')
         except Exception as e:
             logger.error(f'一键训练失败: {e}')
