@@ -1,4 +1,3 @@
-LIBRARY "kvd"
 EXPORTS
   kvd_create
   kvd_destroy
@@ -11,3 +10,4 @@ EXPORTS
   kvd_signature_flush
   kvd_free
   kvd_validate_models
+  kvd_extract_pe_features

@@ -625,11 +625,73 @@ def process_file_directory(input_file_path, output_file_path, max_file_size=DEFA
 ''')
 
 _register_embedded("features.extractor_in_memory", r'''import os
+import ctypes
+import threading
 import numpy as np
 import pefile
 import hashlib
 from utils.path_utils import validate_path
-from config.config import DEFAULT_MAX_FILE_SIZE, ENTROPY_BLOCK_SIZE, ENTROPY_SAMPLE_SIZE, PE_FEATURE_VECTOR_DIM, LIGHTWEIGHT_FEATURE_DIM, LIGHTWEIGHT_FEATURE_SCALE, SIZE_NORM_MAX, TIMESTAMP_MAX, TIMESTAMP_YEAR_BASE, TIMESTAMP_YEAR_MAX, COMMON_SECTIONS, SYSTEM_DLLS, LARGE_TRAILING_DATA_SIZE, ENTROPY_HIGH_THRESHOLD, SECTION_ENTROPY_MIN_SIZE, OVERLAY_ENTROPY_MIN_SIZE, PACKER_SECTION_KEYWORDS, API_CATEGORY_NETWORK, API_CATEGORY_PROCESS, API_CATEGORY_FILESYSTEM, API_CATEGORY_REGISTRY
+from config.config import PROJECT_ROOT, DEFAULT_MAX_FILE_SIZE, ENTROPY_BLOCK_SIZE, ENTROPY_SAMPLE_SIZE, PE_FEATURE_VECTOR_DIM, LIGHTWEIGHT_FEATURE_DIM, LIGHTWEIGHT_FEATURE_SCALE, SIZE_NORM_MAX, TIMESTAMP_MAX, TIMESTAMP_YEAR_BASE, TIMESTAMP_YEAR_MAX, COMMON_SECTIONS, SYSTEM_DLLS, LARGE_TRAILING_DATA_SIZE, ENTROPY_HIGH_THRESHOLD, SECTION_ENTROPY_MIN_SIZE, OVERLAY_ENTROPY_MIN_SIZE, PACKER_SECTION_KEYWORDS, API_CATEGORY_NETWORK, API_CATEGORY_PROCESS, API_CATEGORY_FILESYSTEM, API_CATEGORY_REGISTRY
+
+_NATIVE_DLL = None
+_NATIVE_DLL_READY = False
+_NATIVE_DLL_LOCK = threading.Lock()
+
+def _native_dll_candidates():
+    env_path = os.getenv('KVD_FEATURE_DLL')
+    project_root = PROJECT_ROOT if PROJECT_ROOT else os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    return [
+        env_path,
+        os.path.join(project_root, 'src', 'cpp', 'build', 'bin', 'Release', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'build', 'bin', 'Debug', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'build', 'src', 'Release', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'build', 'src', 'Debug', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'kvd_core', 'build', 'bin', 'Release', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'kvd_core', 'build', 'bin', 'Debug', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'kvd_core', 'build', 'src', 'Release', 'axon_engine.dll'),
+        os.path.join(project_root, 'src', 'cpp', 'kvd_core', 'build', 'src', 'Debug', 'axon_engine.dll'),
+        os.path.join(os.path.dirname(__file__), 'axon_engine.dll')
+    ]
+
+def _load_native_dll():
+    global _NATIVE_DLL, _NATIVE_DLL_READY
+    if _NATIVE_DLL_READY:
+        return _NATIVE_DLL
+    with _NATIVE_DLL_LOCK:
+        if _NATIVE_DLL_READY:
+            return _NATIVE_DLL
+        for candidate in _native_dll_candidates():
+            if not candidate:
+                continue
+            if not os.path.isfile(candidate):
+                continue
+            try:
+                dll = ctypes.CDLL(candidate)
+                dll.kvd_extract_pe_features.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+                dll.kvd_extract_pe_features.restype = ctypes.c_int
+                _NATIVE_DLL = dll
+                _NATIVE_DLL_READY = True
+                return _NATIVE_DLL
+            except Exception:
+                continue
+        _NATIVE_DLL_READY = True
+        return None
+
+def _extract_combined_pe_features_native(file_path):
+    valid_path = validate_path(file_path)
+    if not valid_path:
+        return None
+    dll = _load_native_dll()
+    if dll is None:
+        return None
+    try:
+        out_buf = (ctypes.c_float * PE_FEATURE_VECTOR_DIM)()
+        rc = dll.kvd_extract_pe_features(valid_path.encode('utf-8'), out_buf, PE_FEATURE_VECTOR_DIM)
+        if rc != 0:
+            return None
+        return np.ctypeslib.as_array(out_buf).astype(np.float32, copy=True)
+    except Exception:
+        return None
 
 def calculate_byte_entropy(byte_sequence, block_size=ENTROPY_BLOCK_SIZE):
     if byte_sequence is None or len(byte_sequence) == 0:
@@ -1381,6 +1443,9 @@ PE_FEATURE_ORDER = [
 ]
 
 def extract_combined_pe_features(file_path):
+    native_vector = _extract_combined_pe_features_native(file_path)
+    if native_vector is not None and native_vector.shape[0] == PE_FEATURE_VECTOR_DIM:
+        return native_vector
     lightweight_features = extract_lightweight_pe_features(file_path)
     enhanced_features = extract_enhanced_pe_features(file_path)
     file_attrs = extract_file_attributes(file_path)
@@ -7035,6 +7100,29 @@ def main():
         from training import train_routing
         import finetune
         try:
+            if not os.path.exists(METADATA_FILE):
+                logger.info(f"[*] 元数据文件不存在: {METADATA_FILE}，将自动开始特征提取...")
+                from training.data_loader import extract_features_from_raw_files
+                import json
+                sources = [BENIGN_SAMPLES_DIR, MALICIOUS_SAMPLES_DIR]
+                all_files = []
+                all_labels = []
+                for src in sources:
+                    if os.path.exists(src):
+                        file_names, labels = extract_features_from_raw_files(
+                            src, PROCESSED_DATA_DIR, DEFAULT_MAX_FILE_SIZE, None, 'filename'
+                        )
+                        all_files.extend(file_names)
+                        all_labels.extend(labels)
+                if all_files:
+                    os.makedirs(os.path.dirname(METADATA_FILE), exist_ok=True)
+                    mapping = {fn: ('benign' if lab == 0 else 'malicious') for fn, lab in zip(all_files, all_labels)}
+                    with open(METADATA_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(mapping, f, ensure_ascii=False, indent=2)
+                    logger.info(f'已自动生成元数据: {METADATA_FILE}，样本数: {len(all_files)}')
+                else:
+                    logger.warning("未找到原始样本，跳过自动提取。")
+
             pre_args = argparse.Namespace(
                 max_file_size=DEFAULT_MAX_FILE_SIZE,
                 fast_dev_run=False,

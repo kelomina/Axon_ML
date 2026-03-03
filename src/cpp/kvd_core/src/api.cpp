@@ -1,9 +1,11 @@
 #include "kvd/api.h"
 
 #include "config.h"
+#include "features.h"
 #include "malware_scanner.h"
 #include "util_filesystem.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -36,6 +38,7 @@ struct kvd_handle {
 
 static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& path);
 static std::shared_ptr<kvd::FamilyClassifier> get_shared_family_classifier(const std::string& path);
+static constexpr std::size_t KVD_PE_FEATURE_VECTOR_DIM = 1500;
 
 static std::string kvd_temp_dir() {
   std::error_code ec;
@@ -534,6 +537,29 @@ void kvd_signature_flush(kvd_handle* handle) {
 
 void kvd_free(char* p) {
   std::free(p);
+}
+
+int kvd_extract_pe_features(const char* path, float* out_features, size_t out_len) {
+  try {
+    if (!path || !out_features) {
+      return -1;
+    }
+    if (out_len < KVD_PE_FEATURE_VECTOR_DIM) {
+      return -1;
+    }
+    std::vector<float> features = kvd::extract_combined_pe_features_from_path(path, std::nullopt);
+    if (features.size() != KVD_PE_FEATURE_VECTOR_DIM) {
+      return -2;
+    }
+    std::copy(features.begin(), features.end(), out_features);
+    return 0;
+  } catch (const std::exception& e) {
+    kvd_log_event("kvd_extract_pe_features_exception", kvd_basename(path) + ":" + e.what());
+    return -2;
+  } catch (...) {
+    kvd_log_event("kvd_extract_pe_features_exception", kvd_basename(path) + ":unknown");
+    return -2;
+  }
 }
 
 int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len) {

@@ -56,3 +56,4 @@ vcpkg_installed/
 benign_samples
 malicious_samples
 .trae
+data

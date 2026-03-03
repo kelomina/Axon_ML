@@ -61,6 +61,7 @@ KVD_API int KVD_CALL kvd_train_from_path(kvd_handle* handle, const char* path, i
 KVD_API void KVD_CALL kvd_signature_flush(kvd_handle* handle);
 KVD_API void KVD_CALL kvd_free(char* p);
 KVD_API int KVD_CALL kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len);
+KVD_API int KVD_CALL kvd_extract_pe_features(const char* path, float* out_features, size_t out_len);
 
 #ifdef __cplusplus
 }
