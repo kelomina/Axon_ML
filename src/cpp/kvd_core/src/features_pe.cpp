@@ -865,6 +865,43 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
       0.40f * packed_sections_ratio_f +
       0.25f * get_or_zero(features, "overlay_high_entropy_flag") +
       0.35f * get_or_zero(features, "api_behavior_mix_score"));
+  float imports_density_f = safe_ratio(imports_count_f, get_or_zero(features, "size") / (1024.0f * 64.0f) + 1.0f);
+  float unique_apis_f = get_or_zero(features, "unique_apis");
+  float unique_imports_f = get_or_zero(features, "unique_imports");
+  float section_entropy_std_f = get_or_zero(features, "section_entropy_std");
+  float entry_point_ratio_f = get_or_zero(features, "entry_point_ratio");
+  float exports_name_ratio_f = get_or_zero(features, "exports_name_ratio");
+  float alignment_mismatch_count_f = get_or_zero(features, "alignment_mismatch_count");
+  float nonstandard_exec_count_ratio_f = safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f);
+  float year_f = get_or_zero(features, "timestamp_year");
+  float year_norm_f = clamp01((year_f - 1998.0f) / 30.0f);
+  float suspicious_core_f = clamp01(
+      0.35f * get_or_zero(features, "suspicious_section_score") +
+      0.30f * get_or_zero(features, "suspicious_import_mix") +
+      0.35f * get_or_zero(features, "entropy_structure_risk"));
+  float benign_core_f = clamp01(
+      0.60f * get_or_zero(features, "benign_metadata_score") +
+      0.25f * imported_system_ratio_f +
+      0.15f * exports_name_ratio_f);
+  features["import_density_entropy_risk"] = clamp01(
+      clamp01(imports_density_f * 0.12f) * (0.50f + 0.50f * high_entropy_ratio_f));
+  features["api_uniqueness_gap"] = clamp01(
+      safe_ratio(unique_apis_f, unique_imports_f + 1.0f) * (0.50f + 0.50f * ordinal_ratio_f));
+  features["entry_section_anomaly_risk"] = clamp01(
+      entry_nonstandard_f * (0.50f + 0.50f * entry_point_ratio_f) +
+      0.20f * rwx_sections_ratio_f);
+  features["alignment_exec_compound_risk"] = clamp01(
+      safe_ratio(alignment_mismatch_count_f, sections_count_f + 1.0f) +
+      nonstandard_exec_count_ratio_f);
+  features["timestamp_metadata_conflict"] = clamp01(
+      (1.0f - year_norm_f) * (1.0f - has_signature_f) + checksum_zero_flag_f * 0.35f);
+  features["entropy_api_coupling"] = clamp01(
+      0.55f * section_entropy_std_f + 0.45f * get_or_zero(features, "api_behavior_mix_score"));
+  features["suspicious_vs_benign_margin"] = clamp01(
+      suspicious_core_f - 0.35f * benign_core_f + 0.25f);
+  features["mitigation_import_conflict"] = clamp01(
+      0.65f * get_or_zero(features, "security_mitigation_gap") +
+      0.35f * get_or_zero(features, "suspicious_import_mix"));
 
   return features;
   } catch (...) {
@@ -895,7 +932,9 @@ static std::vector<std::string> build_feature_order() {
       "syscall_api_ratio","import_ordinal_only_count","import_ordinal_only_ratio","avg_imports_per_dll","exports_name_ratio","entry_in_nonstandard_section_flag","tls_callbacks_count","reloc_blocks_count","reloc_entries_count","checksum_zero_flag","api_network_ratio","api_process_ratio","api_filesystem_ratio","api_registry_ratio","overlay_entropy","overlay_high_entropy_flag","packer_keyword_hits_count","packer_keyword_hits_ratio",
       "imports_per_section","entropy_packed_interaction","suspicious_section_score","api_behavior_mix_score","overlay_entropy_weighted",
       "import_execution_pressure","entropy_structure_risk","security_mitigation_gap","suspicious_import_mix","header_consistency_risk",
-      "section_balance_risk","benign_metadata_score","packer_api_overlay_risk"};
+      "section_balance_risk","benign_metadata_score","packer_api_overlay_risk",
+      "import_density_entropy_risk","api_uniqueness_gap","entry_section_anomaly_risk","alignment_exec_compound_risk",
+      "timestamp_metadata_conflict","entropy_api_coupling","suspicious_vs_benign_margin","mitigation_import_conflict"};
 
   std::vector<std::string> order = BASE;
   order.reserve(1500);

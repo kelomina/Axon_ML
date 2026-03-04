@@ -61,10 +61,7 @@ SAVED_MODEL_DIR = os.path.join(RESOURCES_DIR, 'weights')
 # MODEL_PATH：LightGBM 模型文件路径；用途：扫描与评估加载模型；推荐值：resources/weights_cluster_eval/weights/lightgbm_model.txt
 MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model.txt')
 FEATURE_SCALER_PATH = os.path.join(SAVED_MODEL_DIR, 'feature_scaler.pkl')
-FEATURE_SELECTOR_PATH = os.path.join(SAVED_MODEL_DIR, 'feature_selector.json')
 THRESHOLD_REPORT_PATH = os.path.join(RESOURCES_DIR, 'eval', 'threshold_optimization.json')
-FEATURE_SELECTION_REPORT_PATH = os.path.join(RESOURCES_DIR, 'eval', 'feature_selection_report.json')
-FEATURE_DIMENSION_RECORD_PATH = os.path.join(RESOURCES_DIR, 'eval', 'feature_dimension_change.json')
 # HDBSCAN_SAVE_DIR：聚类结果目录；用途：保存标签与可视化；推荐值：resources/weights_cluster_eval/cluster
 HDBSCAN_SAVE_DIR = os.path.join(RESOURCES_DIR, 'cluster')
 # FEATURES_PKL_PATH：特征持久化文件；用途：跳过重复特征提取；推荐值：resources/weights_cluster_eval/cluster/extracted_features.pkl
@@ -306,11 +303,6 @@ COLLECT_MAX_FILE_SIZE = SIZE_NORM_MAX
 # 评估与训练细节参数：控制可视化与学习率策略
 # PREDICTION_THRESHOLD：恶意预测阈值；用途：判定样本为恶意的概率下限；推荐值：0.95-0.99
 PREDICTION_THRESHOLD = 0.98
-FEATURE_SELECTION_ENABLED = True
-FEATURE_SELECTION_VARIANCE_THRESHOLD = 1e-8
-FEATURE_SELECTION_MI_THRESHOLD = 1e-6
-FEATURE_SELECTION_CHI2_THRESHOLD = 1e-6
-FEATURE_SELECTION_FALLBACK_TOLERANCE = 0.0
 OHEM_ENABLED = True
 OHEM_RATIO = 0.2
 OHEM_WEIGHT_FACTOR = 3.0
@@ -530,50 +522,8 @@ class MalwareDataset:
 _register_embedded("features", r'''pass
 ''', is_package=True)
 
-_register_embedded("features.statistics", r'''import json
-import os
-import numpy as np
-from config.config import BYTE_HISTOGRAM_BINS, STAT_CHUNK_COUNT, FEATURE_SELECTOR_PATH
-
-_SELECTOR_PAYLOAD = None
-_SELECTOR_READY = False
-
-def _load_selector_payload():
-    global _SELECTOR_PAYLOAD, _SELECTOR_READY
-    if _SELECTOR_READY:
-        return _SELECTOR_PAYLOAD
-    _SELECTOR_READY = True
-    _SELECTOR_PAYLOAD = None
-    try:
-        if not FEATURE_SELECTOR_PATH or not os.path.exists(FEATURE_SELECTOR_PATH):
-            return None
-        with open(FEATURE_SELECTOR_PATH, 'r', encoding='utf-8') as f:
-            payload = json.load(f)
-        indices = payload.get('selected_indices')
-        n_in = payload.get('n_features_in')
-        if not isinstance(indices, list) or not isinstance(n_in, int):
-            return None
-        _SELECTOR_PAYLOAD = payload
-        return _SELECTOR_PAYLOAD
-    except Exception:
-        _SELECTOR_PAYLOAD = None
-        return None
-
-def _apply_selector(features):
-    payload = _load_selector_payload()
-    if payload is None:
-        return features
-    try:
-        selected = payload.get('selected_indices', [])
-        n_in = int(payload.get('n_features_in', features.shape[0]))
-        if features.shape[0] != n_in:
-            return features
-        idx = np.array(selected, dtype=np.int64)
-        if idx.size == 0:
-            return features
-        return features[idx]
-    except Exception:
-        return features
+_register_embedded("features.statistics", r'''import numpy as np
+from config.config import BYTE_HISTOGRAM_BINS, STAT_CHUNK_COUNT
 
 def extract_statistical_features(byte_sequence, pe_features, orig_length=None):
     if orig_length is not None and orig_length >= 0:
@@ -668,9 +618,7 @@ def extract_statistical_features(byte_sequence, pe_features, orig_length=None):
         features.extend([0.0, 0.0, 0.0, 0.0])
         features.extend([0.0, 0.0, 0.0, 0.0])
     features.extend(pe_features.tolist())
-    out = np.array(features, dtype=np.float32)
-    out = _apply_selector(out)
-    return out
+    return np.array(features, dtype=np.float32)
 ''')
 
 _register_embedded("features.extractor_save", r'''import numpy as np
@@ -1587,17 +1535,117 @@ def extract_features_in_memory(input_file_path, max_file_size=DEFAULT_MAX_FILE_S
 _register_embedded("utils", r'''pass
 ''', is_package=True)
 
-_register_embedded("utils.logging_utils", r'''import logging
+_register_embedded("utils.logging_utils", r'''import os
+import builtins
+import logging
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
+
+_LOG_FORMAT = '%(asctime)s-%(levelname)s-%(module)s-%(funcName)s-%(lineno)d-%(message)s'
+_DEFAULT_LOG_LEVEL = logging.DEBUG
+_DEFAULT_LOG_FILE = 'app.log'
+_MAX_BYTES = 100 * 1024 * 1024
+_BACKUP_COUNT = 6
+_RETENTION_DAYS = 30
+_PRINT_REDIRECT_INSTALLED = False
+
+def _project_root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+def _logs_dir():
+    path = os.path.join(_project_root(), 'logs')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def _safe_move(src, dst):
+    if not os.path.exists(src):
+        return
+    target = dst
+    if os.path.exists(target):
+        index = 1
+        while os.path.exists(f'{dst}.{index}'):
+            index += 1
+        target = f'{dst}.{index}'
+    os.replace(src, target)
+
+def _archive_logs_by_date(logs_dir, base_log_name):
+    archive_root = os.path.join(logs_dir, 'archive')
+    os.makedirs(archive_root, exist_ok=True)
+    for entry in os.listdir(logs_dir):
+        full_path = os.path.join(logs_dir, entry)
+        if not os.path.isfile(full_path):
+            continue
+        if entry == base_log_name:
+            continue
+        if not entry.startswith(base_log_name):
+            continue
+        modified_date = datetime.fromtimestamp(os.path.getmtime(full_path)).strftime('%Y-%m-%d')
+        target_dir = os.path.join(archive_root, modified_date)
+        os.makedirs(target_dir, exist_ok=True)
+        _safe_move(full_path, os.path.join(target_dir, entry))
+
+def _cleanup_expired_logs(logs_dir, retention_days=_RETENTION_DAYS):
+    expire_time = datetime.now() - timedelta(days=retention_days)
+    for root, _, files in os.walk(logs_dir):
+        for file_name in files:
+            full_path = os.path.join(root, file_name)
+            try:
+                modified = datetime.fromtimestamp(os.path.getmtime(full_path))
+                if modified < expire_time:
+                    os.remove(full_path)
+            except OSError:
+                continue
+
+def set_log_level(level):
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), _DEFAULT_LOG_LEVEL)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    for handler in root_logger.handlers:
+        handler.setLevel(level)
+    return level
+
+def configure_logging(log_file_name=_DEFAULT_LOG_FILE, level=_DEFAULT_LOG_LEVEL):
+    logs_dir = _logs_dir()
+    _archive_logs_by_date(logs_dir, log_file_name)
+    _cleanup_expired_logs(logs_dir)
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+    root_logger.setLevel(_DEFAULT_LOG_LEVEL)
+    formatter = logging.Formatter(_LOG_FORMAT)
+    file_handler = RotatingFileHandler(
+        os.path.join(logs_dir, log_file_name),
+        maxBytes=_MAX_BYTES,
+        backupCount=_BACKUP_COUNT,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+    set_log_level(level)
+    logging.captureWarnings(True)
+    return root_logger
+
+def redirect_print_to_logger(logger_name='print_redirect'):
+    global _PRINT_REDIRECT_INSTALLED
+    if _PRINT_REDIRECT_INSTALLED:
+        return
+    def _redirected_print(*args, **kwargs):
+        sep = kwargs.get('sep', ' ')
+        end = kwargs.get('end', '\n')
+        message = sep.join(str(arg) for arg in args)
+        if end != '\n':
+            message += end
+        text = message.rstrip('\n')
+        if text:
+            logging.getLogger(logger_name).info(text)
+    builtins.print = _redirected_print
+    _PRINT_REDIRECT_INSTALLED = True
 
 def get_logger(name='kolo'):
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-        handler.setFormatter(fmt)
-        logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    return logger
+    if not logging.getLogger().handlers:
+        configure_logging()
+    return logging.getLogger(name)
 ''')
 
 _register_embedded("utils.path_utils", r'''import os
@@ -1746,7 +1794,6 @@ _register_embedded("models.routing_model", r'''import os
 import numpy as np
 import lightgbm as lgb
 from features.extractor_in_memory import PE_FEATURE_ORDER
-from training.feature_selection import map_original_index_to_selected
 from config.config import (
     GATING_MODE, EXPERT_NORMAL_MODEL_PATH, EXPERT_PACKED_MODEL_PATH, PE_FEATURE_VECTOR_DIM,
     PACKED_SECTIONS_RATIO_THRESHOLD, PACKER_KEYWORD_HITS_THRESHOLD
@@ -1798,16 +1845,16 @@ class RoutingModel:
 
     def _feature_index(self, key):
         try:
-            original_index = 49 + 256 + PE_FEATURE_ORDER.index(key)
-            return map_original_index_to_selected(original_index)
+            return 256 + PE_FEATURE_ORDER.index(key)
         except ValueError:
             return None
 
     def _rule_gating(self, x):
+        start = x.shape[1] - PE_FEATURE_VECTOR_DIM
         p = self._idx_packed_sections
         k = self._idx_packer_hits
-        ps = x[:, p] if p is not None and p < x.shape[1] else np.zeros(len(x))
-        kh = x[:, k] if k is not None and k < x.shape[1] else np.zeros(len(x))
+        ps = x[:, start + p] if p is not None else np.zeros(len(x))
+        kh = x[:, start + k] if k is not None else np.zeros(len(x))
         return np.logical_or(
             ps > PACKED_SECTIONS_RATIO_THRESHOLD,
             kh > PACKER_KEYWORD_HITS_THRESHOLD
@@ -1859,267 +1906,20 @@ def save_features_to_csv(X, y, files, output_path):
     df.to_csv(output_path, index=False)
     print(f"[+] Features saved to: {output_path}")
 
-def save_features_to_pickle(X, y, files, output_path):
+def save_features_to_pickle(X, y, files, output_path, feature_names=None):
     print(f"[*] Saving features to {output_path}...")
-    feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+    if feature_names is None:
+        feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+    else:
+        feature_names = [str(name) for name in feature_names]
+        if len(feature_names) != X.shape[1]:
+            feature_names = [f"feature_{i}" for i in range(X.shape[1])]
     df_data = { 'filename': files, 'label': y }
     for i, feature_name in enumerate(feature_names):
         df_data[feature_name] = X[:, i]
     df = pd.DataFrame(df_data)
     df.to_pickle(output_path)
     print(f"[+] Features saved to: {output_path}")
-''')
-
-_register_embedded("training.feature_selection", r'''import json
-import os
-import numpy as np
-import lightgbm as lgb
-from sklearn.feature_selection import mutual_info_classif, chi2
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import roc_auc_score
-from features.extractor_in_memory import PE_FEATURE_ORDER
-from config.config import (
-    FEATURE_SELECTION_ENABLED,
-    FEATURE_SELECTION_VARIANCE_THRESHOLD,
-    FEATURE_SELECTION_MI_THRESHOLD,
-    FEATURE_SELECTION_CHI2_THRESHOLD,
-    FEATURE_SELECTION_FALLBACK_TOLERANCE,
-    FEATURE_SELECTOR_PATH,
-    FEATURE_SELECTION_REPORT_PATH,
-    FEATURE_DIMENSION_RECORD_PATH,
-    DEFAULT_RANDOM_STATE,
-)
-
-STAT_FEATURE_DIM = 49
-LIGHTWEIGHT_FEATURE_DIM = 256
-_CACHE = None
-_CACHE_READY = False
-
-def _safe_float(v, default=0.0):
-    try:
-        return float(v)
-    except Exception:
-        return float(default)
-
-def _safe_int(v, default=0):
-    try:
-        return int(v)
-    except Exception:
-        return int(default)
-
-def _protected_indices(total_dim):
-    protected = set()
-    protected.update(range(min(12, total_dim)))
-    try:
-        p_idx = STAT_FEATURE_DIM + LIGHTWEIGHT_FEATURE_DIM + PE_FEATURE_ORDER.index('packed_sections_ratio')
-        if 0 <= p_idx < total_dim:
-            protected.add(p_idx)
-    except Exception:
-        pass
-    try:
-        k_idx = STAT_FEATURE_DIM + LIGHTWEIGHT_FEATURE_DIM + PE_FEATURE_ORDER.index('packer_keyword_hits_count')
-        if 0 <= k_idx < total_dim:
-            protected.add(k_idx)
-    except Exception:
-        pass
-    return protected
-
-def _evaluate_auc(X, y):
-    X = np.asarray(X, dtype=np.float32)
-    y = np.asarray(y, dtype=np.int32)
-    if X.size == 0 or len(np.unique(y)) < 2:
-        return 0.0
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
-    aucs = []
-    for tr, va in cv.split(X, y):
-        model = lgb.LGBMClassifier(
-            objective='binary',
-            n_estimators=300,
-            num_leaves=63,
-            learning_rate=0.05,
-            feature_fraction=0.8,
-            bagging_fraction=0.8,
-            bagging_freq=5,
-            min_data_in_leaf=20,
-            random_state=DEFAULT_RANDOM_STATE,
-            verbosity=-1
-        )
-        model.fit(X[tr], y[tr])
-        proba = model.predict_proba(X[va])[:, 1]
-        aucs.append(float(roc_auc_score(y[va], proba)))
-    return float(np.mean(aucs)) if aucs else 0.0
-
-def fit_feature_selector(X, y):
-    X = np.asarray(X, dtype=np.float32)
-    y = np.asarray(y, dtype=np.int32)
-    n_samples, n_features = X.shape
-    var = np.var(X, axis=0)
-    var_mask = var <= FEATURE_SELECTION_VARIANCE_THRESHOLD
-    try:
-        mi_scores = mutual_info_classif(X, y, random_state=DEFAULT_RANDOM_STATE)
-        mi_scores = np.nan_to_num(mi_scores, nan=0.0, posinf=0.0, neginf=0.0)
-    except Exception:
-        mi_scores = np.zeros(n_features, dtype=np.float64)
-    try:
-        X_nonneg = MinMaxScaler().fit_transform(X)
-        chi_scores, _ = chi2(X_nonneg, y)
-        chi_scores = np.nan_to_num(chi_scores, nan=0.0, posinf=0.0, neginf=0.0)
-    except Exception:
-        chi_scores = np.zeros(n_features, dtype=np.float64)
-    weak_mask = np.logical_and(
-        mi_scores <= FEATURE_SELECTION_MI_THRESHOLD,
-        chi_scores <= FEATURE_SELECTION_CHI2_THRESHOLD
-    )
-    drop_mask = np.logical_or(var_mask, weak_mask)
-    protected = _protected_indices(n_features)
-    if protected:
-        protected_idx = np.array(sorted(list(protected)), dtype=np.int64)
-        drop_mask[protected_idx] = False
-    selected_indices = np.where(~drop_mask)[0].astype(np.int64)
-    if selected_indices.size == 0:
-        selected_indices = np.arange(n_features, dtype=np.int64)
-    removed_indices = np.where(drop_mask)[0].astype(np.int64)
-    auc_baseline = _evaluate_auc(X, y)
-    auc_selected = _evaluate_auc(X[:, selected_indices], y)
-    if auc_selected + FEATURE_SELECTION_FALLBACK_TOLERANCE < auc_baseline:
-        selected_indices = np.arange(n_features, dtype=np.int64)
-        removed_indices = np.array([], dtype=np.int64)
-        auc_selected = auc_baseline
-    selected_set = set(int(i) for i in selected_indices.tolist())
-    removed_stats = []
-    for idx in removed_indices.tolist():
-        removed_stats.append({
-            'index': int(idx),
-            'variance': _safe_float(var[idx]),
-            'mutual_info': _safe_float(mi_scores[idx]),
-            'chi2': _safe_float(chi_scores[idx]),
-            'rule': 'variance_or_statistical_weak'
-        })
-    payload = {
-        'enabled': bool(FEATURE_SELECTION_ENABLED),
-        'n_samples': int(n_samples),
-        'n_features_in': int(n_features),
-        'n_features_out': int(selected_indices.size),
-        'selected_indices': [int(i) for i in selected_indices.tolist()],
-        'removed_indices': [int(i) for i in removed_indices.tolist()],
-        'removed_feature_stats': removed_stats,
-        'rules': {
-            'variance_threshold': _safe_float(FEATURE_SELECTION_VARIANCE_THRESHOLD),
-            'mutual_info_threshold': _safe_float(FEATURE_SELECTION_MI_THRESHOLD),
-            'chi2_threshold': _safe_float(FEATURE_SELECTION_CHI2_THRESHOLD),
-            'protected_indices': sorted([int(i) for i in protected if int(i) in selected_set]),
-            'fallback_tolerance': _safe_float(FEATURE_SELECTION_FALLBACK_TOLERANCE)
-        },
-        'performance': {
-            'baseline_cv_auc': _safe_float(auc_baseline),
-            'selected_cv_auc': _safe_float(auc_selected),
-            'non_degradation_verified': bool(auc_selected + FEATURE_SELECTION_FALLBACK_TOLERANCE >= auc_baseline)
-        }
-    }
-    return payload
-
-def save_selector_payload(payload):
-    if not FEATURE_SELECTOR_PATH:
-        return
-    os.makedirs(os.path.dirname(FEATURE_SELECTOR_PATH), exist_ok=True)
-    with open(FEATURE_SELECTOR_PATH, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.makedirs(os.path.dirname(FEATURE_SELECTION_REPORT_PATH), exist_ok=True)
-    with open(FEATURE_SELECTION_REPORT_PATH, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    dim_record = {
-        'n_features_in': int(payload.get('n_features_in', 0)),
-        'n_features_out': int(payload.get('n_features_out', 0)),
-        'removed_count': int(len(payload.get('removed_indices', []))),
-        'selected_ratio': float(payload.get('n_features_out', 0) / max(1, payload.get('n_features_in', 1))),
-        'performance': payload.get('performance', {})
-    }
-    with open(FEATURE_DIMENSION_RECORD_PATH, 'w', encoding='utf-8') as f:
-        json.dump(dim_record, f, ensure_ascii=False, indent=2)
-
-def load_selector_payload(force_reload=False):
-    global _CACHE, _CACHE_READY
-    if _CACHE_READY and (not force_reload):
-        return _CACHE
-    _CACHE_READY = True
-    _CACHE = None
-    try:
-        if not FEATURE_SELECTOR_PATH or not os.path.exists(FEATURE_SELECTOR_PATH):
-            return None
-        with open(FEATURE_SELECTOR_PATH, 'r', encoding='utf-8') as f:
-            payload = json.load(f)
-        if not isinstance(payload.get('selected_indices'), list):
-            return None
-        _CACHE = payload
-        return _CACHE
-    except Exception:
-        _CACHE = None
-        return None
-
-def apply_selector_array(X, payload=None):
-    arr = np.asarray(X, dtype=np.float32)
-    p = payload if payload is not None else load_selector_payload()
-    if p is None:
-        return arr
-    selected = p.get('selected_indices', [])
-    n_in = _safe_int(p.get('n_features_in', arr.shape[-1]), arr.shape[-1])
-    if arr.ndim == 1:
-        if arr.shape[0] != n_in:
-            return arr
-        idx = np.array(selected, dtype=np.int64)
-        return arr[idx]
-    if arr.shape[1] != n_in:
-        return arr
-    idx = np.array(selected, dtype=np.int64)
-    return arr[:, idx]
-
-def map_original_index_to_selected(original_index):
-    p = load_selector_payload()
-    if p is None:
-        return int(original_index)
-    selected = p.get('selected_indices', [])
-    index_map = {int(v): i for i, v in enumerate(selected)}
-    return index_map.get(int(original_index))
-
-def ensure_training_selector(X, y, fit_if_missing=True):
-    arr = np.asarray(X, dtype=np.float32)
-    if (not FEATURE_SELECTION_ENABLED) or arr.ndim != 2:
-        return arr, None, False
-    payload = load_selector_payload()
-    created = False
-    if payload is None or _safe_int(payload.get('n_features_in', -1), -1) != arr.shape[1]:
-        if not fit_if_missing:
-            return arr, payload, created
-        payload = fit_feature_selector(arr, y)
-        save_selector_payload(payload)
-        payload = load_selector_payload(force_reload=True)
-        created = True
-    transformed = apply_selector_array(arr, payload)
-    return transformed, payload, created
-
-def main(args=None):
-    from training.data_loader import load_dataset
-    from training.feature_io import save_features_to_pickle
-    from config.config import FEATURES_PKL_PATH, PROCESSED_DATA_DIR, METADATA_FILE, DEFAULT_MAX_FILE_SIZE
-    import pandas as pd
-    use_existing = bool(getattr(args, 'use_existing_features', True))
-    max_file_size = int(getattr(args, 'max_file_size', DEFAULT_MAX_FILE_SIZE))
-    if use_existing and os.path.exists(FEATURES_PKL_PATH):
-        df = pd.read_pickle(FEATURES_PKL_PATH)
-        files = df['filename'].tolist()
-        y = df['label'].astype(int).to_numpy()
-        feature_cols = [c for c in df.columns if c.startswith('feature_')]
-        feature_cols = sorted(feature_cols, key=lambda c: int(c.split('_')[1]))
-        X = df[feature_cols].to_numpy(dtype=np.float32)
-    else:
-        X, y, files = load_dataset(PROCESSED_DATA_DIR, METADATA_FILE, max_file_size=max_file_size, fast_dev_run=False)
-    X_new, payload, _ = ensure_training_selector(X, y, fit_if_missing=True)
-    save_features_to_pickle(X_new, y, files, FEATURES_PKL_PATH)
-    print(f"[+] Feature selector applied: {X.shape[1]} -> {X_new.shape[1]}")
-    print(f"[+] Feature selector saved: {FEATURE_SELECTOR_PATH}")
-    print(f"[+] Performance check: {payload.get('performance', {}) if payload else {}}")
-    return payload
 ''')
 
 _register_embedded("training.evaluate", r'''import os
@@ -3040,7 +2840,6 @@ from models.gating import create_gating_model
 from training.train_lightgbm import train_lightgbm_model
 from training.data_loader import load_dataset, extract_features_from_raw_files, load_incremental_dataset
 from training.feature_io import save_features_to_pickle
-from training.feature_selection import map_original_index_to_selected, ensure_training_selector
 from training.model_io import load_existing_model, save_model
 from training.evaluate import evaluate_model
 from features.extractor_in_memory import PE_FEATURE_ORDER
@@ -3048,16 +2847,10 @@ from features.extractor_in_memory import PE_FEATURE_ORDER
 from models.routing_model import RoutingModel
 
 # Feature indices based on analysis
-STAT_FEATURE_DIM = 49
+STAT_FEATURE_DIM = 49 
 LIGHTWEIGHT_PE_DIM = 256
-ORIG_IDX_PACKED_SECTIONS_RATIO = STAT_FEATURE_DIM + LIGHTWEIGHT_PE_DIM + PE_FEATURE_ORDER.index('packed_sections_ratio')
-ORIG_IDX_PACKER_KEYWORD_HITS_COUNT = STAT_FEATURE_DIM + LIGHTWEIGHT_PE_DIM + PE_FEATURE_ORDER.index('packer_keyword_hits_count')
-
-def _routing_indices():
-    return (
-        map_original_index_to_selected(ORIG_IDX_PACKED_SECTIONS_RATIO),
-        map_original_index_to_selected(ORIG_IDX_PACKER_KEYWORD_HITS_COUNT),
-    )
+IDX_PACKED_SECTIONS_RATIO = STAT_FEATURE_DIM + LIGHTWEIGHT_PE_DIM + PE_FEATURE_ORDER.index('packed_sections_ratio')
+IDX_PACKER_KEYWORD_HITS_COUNT = STAT_FEATURE_DIM + LIGHTWEIGHT_PE_DIM + PE_FEATURE_ORDER.index('packer_keyword_hits_count')
 
 def get_feature_semantics(index):
     n_stat = 49
@@ -3214,12 +3007,12 @@ def generate_routing_labels(X):
     print("[*] Generating routing labels based on heuristics...")
     
     # Check feature dimension
-    idx_packed, idx_packer = _routing_indices()
-    if idx_packed is None and idx_packer is None:
-        print(f"[!] Warning: Routing features not found in selected feature set.")
+    if X.shape[1] <= max(IDX_PACKED_SECTIONS_RATIO, IDX_PACKER_KEYWORD_HITS_COUNT):
+        print(f"[!] Warning: Feature dimension {X.shape[1]} is smaller than expected indices.")
         return np.zeros(len(X), dtype=int)
-    packed_ratio = X[:, idx_packed] if idx_packed is not None and idx_packed < X.shape[1] else np.zeros(len(X))
-    packer_hits = X[:, idx_packer] if idx_packer is not None and idx_packer < X.shape[1] else np.zeros(len(X))
+
+    packed_ratio = X[:, IDX_PACKED_SECTIONS_RATIO]
+    packer_hits = X[:, IDX_PACKER_KEYWORD_HITS_COUNT]
     
     # Heuristic: Packed if packed_sections_ratio > PACKED_SECTIONS_RATIO_THRESHOLD OR packer_keyword_hits_count > PACKER_KEYWORD_HITS_THRESHOLD
     is_packed = (packed_ratio > PACKED_SECTIONS_RATIO_THRESHOLD) | (packer_hits > PACKER_KEYWORD_HITS_THRESHOLD)
@@ -3419,10 +3212,6 @@ def main(args=None):
         
         if save_features_flag:
             save_features_to_pickle(X, y, files, FEATURES_PKL_PATH)
-
-    X, selector_payload, _ = ensure_training_selector(X, y, fit_if_missing=True)
-    if save_features_flag or use_existing:
-        save_features_to_pickle(X, y, files, FEATURES_PKL_PATH)
 
     print(f"[*] Total samples: {len(X)}")
     print(f"[*] Feature dimension: {X.shape[1]}")
@@ -4631,6 +4420,7 @@ _register_embedded("pretrain", r'''import os
 import argparse
 import json
 import pickle
+import re
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -4639,12 +4429,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score
 from training.data_loader import load_dataset, extract_features_from_raw_files, load_incremental_dataset
 from training.feature_io import save_features_to_pickle
-from training.feature_selection import ensure_training_selector
 from training.train_lightgbm import train_lightgbm_model
 from training.evaluate import evaluate_model
 from training.model_io import save_model, load_existing_model
 from training.incremental import incremental_train_lightgbm_model
-from config.config import PROCESSED_DATA_DIR, METADATA_FILE, SAVED_MODEL_DIR, MODEL_PATH, FEATURES_PKL_PATH, DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS, DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS, HELP_MAX_FILE_SIZE, HELP_FAST_DEV_RUN, HELP_SAVE_FEATURES, HELP_FINETUNE_ON_FALSE_POSITIVES, HELP_INCREMENTAL_TRAINING, HELP_INCREMENTAL_DATA_DIR, HELP_INCREMENTAL_RAW_DATA_DIR, HELP_FILE_EXTENSIONS, HELP_LABEL_INFERENCE, HELP_NUM_BOOST_ROUND, HELP_INCREMENTAL_ROUNDS, HELP_INCREMENTAL_EARLY_STOPPING, HELP_MAX_FINETUNE_ITERATIONS, HELP_USE_EXISTING_FEATURES, FEATURE_SCALER_PATH, THRESHOLD_REPORT_PATH, HDBSCAN_SAVE_DIR, PREDICTION_THRESHOLD, OHEM_ENABLED, OHEM_RATIO, OHEM_WEIGHT_FACTOR, MISCLASSIFIED_FP_WEIGHT, MISCLASSIFIED_FN_WEIGHT, MISCLASSIFIED_HARD_WEIGHT
+from features.extractor_in_memory import PE_FEATURE_ORDER
+from config.config import PROCESSED_DATA_DIR, METADATA_FILE, SAVED_MODEL_DIR, MODEL_PATH, FEATURES_PKL_PATH, DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS, DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS, HELP_MAX_FILE_SIZE, HELP_FAST_DEV_RUN, HELP_SAVE_FEATURES, HELP_FINETUNE_ON_FALSE_POSITIVES, HELP_INCREMENTAL_TRAINING, HELP_INCREMENTAL_DATA_DIR, HELP_INCREMENTAL_RAW_DATA_DIR, HELP_FILE_EXTENSIONS, HELP_LABEL_INFERENCE, HELP_NUM_BOOST_ROUND, HELP_INCREMENTAL_ROUNDS, HELP_INCREMENTAL_EARLY_STOPPING, HELP_MAX_FINETUNE_ITERATIONS, HELP_USE_EXISTING_FEATURES, FEATURE_SCALER_PATH, THRESHOLD_REPORT_PATH, HDBSCAN_SAVE_DIR, PREDICTION_THRESHOLD, OHEM_ENABLED, OHEM_RATIO, OHEM_WEIGHT_FACTOR, MISCLASSIFIED_FP_WEIGHT, MISCLASSIFIED_FN_WEIGHT, MISCLASSIFIED_HARD_WEIGHT, RESOURCES_DIR
 
 
 def _normalize_name(name):
@@ -4664,6 +4454,76 @@ def _load_samples(report_path):
         return json.loads(report_path.read_text(encoding='utf-8'))
     except Exception:
         return []
+
+
+def _feature_index_from_name(name):
+    m = re.search(r'(\d+)$', str(name))
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _collect_zero_importance_features():
+    report_patterns = ['hard_samples_*.json', 'false_positives_*.json', 'false_negitives_*.json']
+    max_abs_importance = {}
+    raw_values = {}
+    for pattern in report_patterns:
+        report_path = _latest_sample_report(pattern)
+        for sample in _load_samples(report_path):
+            fmap = sample.get('feature_importance', {}) or {}
+            for key, value in fmap.items():
+                idx = _feature_index_from_name(key)
+                if idx is None:
+                    continue
+                val = float(value)
+                prev = max_abs_importance.get(idx, 0.0)
+                max_abs_importance[idx] = max(prev, abs(val))
+                raw_values[idx] = val
+    zero_indices = sorted([idx for idx, v in max_abs_importance.items() if v <= 1e-12])
+    return zero_indices, raw_values
+
+
+def _make_feature_columns(n_features):
+    return [f'feature_{i}' for i in range(int(n_features))]
+
+
+def _write_feature_selector_reports(n_samples, n_features_in, selected_indices, removed_indices, importance_map):
+    weights_dir = Path(RESOURCES_DIR) / 'weights'
+    eval_dir = Path(RESOURCES_DIR) / 'eval'
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    removed_feature_stats = []
+    for idx in removed_indices:
+        removed_feature_stats.append({
+            'feature_id': int(idx),
+            'feature_name': f'feature_{int(idx)}',
+            'importance': float(importance_map.get(int(idx), 0.0))
+        })
+    selector_payload = {
+        'enabled': True,
+        'n_samples': int(n_samples),
+        'n_features_in': int(n_features_in),
+        'n_features_out': int(len(selected_indices)),
+        'selected_indices': [int(i) for i in selected_indices],
+        'removed_indices': [int(i) for i in removed_indices],
+        'removed_feature_stats': removed_feature_stats,
+        'rules': {
+            'variance_threshold': 1e-08,
+            'mutual_info_threshold': 1e-06,
+            'chi2_threshold': 1e-06,
+            'protected_indices': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 323, 412],
+            'fallback_tolerance': 0.0
+        }
+    }
+    (weights_dir / 'feature_selector.json').write_text(json.dumps(selector_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    (eval_dir / 'feature_selection_report.json').write_text(json.dumps(selector_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    dim_change_payload = {
+        'n_features_in': int(n_features_in),
+        'n_features_out': int(len(selected_indices)),
+        'removed_count': int(len(removed_indices)),
+        'selected_ratio': float(len(selected_indices) / max(1, int(n_features_in)))
+    }
+    (eval_dir / 'feature_dimension_change.json').write_text(json.dumps(dim_change_payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
 def _build_sample_weight_map():
@@ -4767,6 +4627,8 @@ def _optimize_threshold(y_true, y_proba, baseline_threshold):
 
 def main(args):
     os.makedirs(SAVED_MODEL_DIR, exist_ok=True)
+    df = None
+    feature_columns = None
 
     if args.use_existing_features and os.path.exists(FEATURES_PKL_PATH):
 
@@ -4775,7 +4637,9 @@ def main(args):
             df = pd.read_pickle(FEATURES_PKL_PATH)
             files = df['filename'].tolist()
             y = df['label'].values
-            X = df.drop(['filename', 'label'], axis=1).values
+            feature_columns = [c for c in df.columns if c.startswith('feature_')]
+            feature_columns = sorted(feature_columns, key=lambda c: int(c.split('_')[1]))
+            X = df[feature_columns].values
 
             print(f"[+] Successfully loaded feature file, total {len(files)} samples, feature dimension: {X.shape[1]}")
         except Exception as e:
@@ -4811,12 +4675,23 @@ def main(args):
         else:
             X, y, files = load_dataset(PROCESSED_DATA_DIR, METADATA_FILE, args.max_file_size, args.fast_dev_run)
 
-    X, selector_payload, selector_created = ensure_training_selector(X, y, fit_if_missing=True)
-    print(f"[+] Feature selection applied: dim={X.shape[1]}")
-    if selector_payload is not None:
-        perf = selector_payload.get('performance', {})
-        print(f"[+] Feature selection performance: {perf}")
-    save_features_to_pickle(X, y, files, FEATURES_PKL_PATH)
+    n_features_in = int(X.shape[1])
+    if feature_columns is None:
+        feature_columns = _make_feature_columns(n_features_in)
+    zero_indices, zero_importance_map = _collect_zero_importance_features()
+    protected_indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 323, 412}
+    removed_indices = sorted([idx for idx in zero_indices if 0 <= idx < n_features_in and idx not in protected_indices])
+    removed_set = set(removed_indices)
+    selected_indices = [idx for idx in range(n_features_in) if idx not in removed_set]
+    if not selected_indices:
+        selected_indices = list(range(n_features_in))
+        removed_indices = []
+    if len(selected_indices) < n_features_in:
+        X = X[:, selected_indices]
+        feature_columns = [feature_columns[idx] for idx in selected_indices]
+        print(f"[*] 已根据困难样本重要度剔除特征: {len(removed_indices)} 个，保留 {len(selected_indices)} 个")
+    _write_feature_selector_reports(len(files), n_features_in, selected_indices, removed_indices, zero_importance_map)
+    save_features_to_pickle(X, y, files, FEATURES_PKL_PATH, feature_names=feature_columns)
 
     if len(X) > 10:
         from config.config import DEFAULT_TEST_SIZE, DEFAULT_VAL_SIZE, DEFAULT_RANDOM_STATE
@@ -5059,30 +4934,8 @@ def main(args):
             else:
                 return '轻量哈希位:节名'
         k = j - 256
-        order = [
-            'size','log_size','sections_count','symbols_count','imports_count','exports_count',
-            'unique_imports','unique_dlls','unique_apis','section_names_count','section_total_size',
-            'section_total_vsize','avg_section_size','avg_section_vsize','section_entropy_avg','section_entropy_min','section_entropy_max','section_entropy_std','packed_sections_ratio','subsystem','dll_characteristics',
-            'code_section_ratio','data_section_ratio','code_vsize_ratio','data_vsize_ratio',
-            'has_nx_compat','has_aslr','has_seh','has_guard_cf','has_resources','has_debug_info',
-            'has_tls','has_relocs','has_exceptions','dll_name_avg_length','dll_name_max_length',
-            'dll_name_min_length','section_name_avg_length','section_name_max_length','section_name_min_length',
-            'export_name_avg_length','export_name_max_length','export_name_min_length','max_section_size',
-            'min_section_size','long_sections_count','short_sections_count','section_size_std','section_size_cv',
-            'executable_writable_sections','file_entropy_avg','file_entropy_min','file_entropy_max','file_entropy_range',
-            'zero_byte_ratio','printable_byte_ratio','trailing_data_size','trailing_data_ratio','imported_system_dlls_count',
-            'exports_density','has_large_trailing_data','pe_header_size','header_size_ratio','file_entropy_std',
-            'file_entropy_q25','file_entropy_q75','file_entropy_median','high_entropy_ratio','low_entropy_ratio',
-            'entropy_change_rate','entropy_change_std','executable_sections_count','writable_sections_count',
-            'readable_sections_count','executable_sections_ratio','writable_sections_ratio','readable_sections_ratio',
-            'executable_code_density','non_standard_executable_sections_count','rwx_sections_count','rwx_sections_ratio',
-            'special_char_ratio','long_sections_ratio','short_sections_ratio','has_.text_section','has_.data_section','has_.rdata_section','has_.reloc_section','has_.rsrc_section',
-            'has_signature','signature_size','signature_has_signing_time','version_info_present','company_name_len','product_name_len','file_version_len','original_filename_len',
-            'has_upx_section','has_mpress_section','has_aspack_section','has_themida_section','api_network_ratio','api_process_ratio','api_filesystem_ratio','api_registry_ratio','overlay_entropy','overlay_high_entropy_flag','packer_keyword_hits_count','packer_keyword_hits_ratio','timestamp','timestamp_year'
-        ]
-        if k < len(order):
-            m = order[k]
-            return m
+        if k < len(PE_FEATURE_ORDER):
+            return PE_FEATURE_ORDER[k]
         return 'PE特征'
     for rank, idx in enumerate(indices_sorted[:EVAL_TOP_FEATURE_COUNT], 1):
         semantics = get_feature_semantics(idx)
@@ -7556,38 +7409,60 @@ from config.config import (
     AUTOML_METHOD_DEFAULT, AUTOML_TRIALS_DEFAULT, AUTOML_CV_FOLDS_DEFAULT, AUTOML_METRIC_DEFAULT,
     DETECTED_MALICIOUS_PATHS_REPORT_PATH
 )
-from utils.logging_utils import get_logger
+from utils.logging_utils import configure_logging, get_logger, redirect_print_to_logger, set_log_level
 
 def _serve_ipc_only() -> str:
+    logger = get_logger('kolo')
+    logger.debug('进入IPC服务启动流程')
     import scanner_service
     asyncio.run(scanner_service.run_ipc_forever())
+    logger.debug('IPC服务流程结束')
     return 'ipc'
 
-def _build_feature_importance_dict(model, feature_columns):
-    importance_values = model.feature_importance(importance_type='gain')
+def _build_feature_name_map(model, feature_columns):
+    import re
     model_feature_names = list(model.feature_name() or [])
-    if len(model_feature_names) != len(importance_values):
-        model_feature_names = list(feature_columns[:len(importance_values)])
-    feature_importance = {}
-    for i, value in enumerate(importance_values):
+    if len(model_feature_names) != len(feature_columns):
+        model_feature_names = list(feature_columns[:len(model_feature_names)])
+    if len(model_feature_names) < len(feature_columns):
+        model_feature_names.extend(feature_columns[len(model_feature_names):])
+    feature_name_map = {}
+    for i, feature_name in enumerate(model_feature_names):
         if i < len(model_feature_names):
             feature_name = str(model_feature_names[i])
         elif i < len(feature_columns):
             feature_name = str(feature_columns[i])
         else:
             feature_name = f'feature_{i}'
-        feature_importance[feature_name] = float(value)
-    return feature_importance
+        m = re.search(r'(\d+)$', feature_name)
+        if m:
+            feature_id = int(m.group(1))
+        else:
+            feature_id = int(i)
+        feature_name_map[f'Column_{feature_id}'] = feature_name
+    return feature_name_map
 
-def _build_sample_payload(sample_indices, sample_ids, y_true, y_pred, y_pred_proba, feature_importance):
+
+def _build_sample_shap_map(shap_row):
+    import numpy as np
+    values = np.asarray(shap_row, dtype=np.float32)
+    feature_dim = values.shape[0]
+    if feature_dim > 1:
+        values = values[:-1]
+    abs_values = np.abs(values)
+    return {f'Column_{i}': float(abs_values[i]) for i in range(abs_values.shape[0])}
+
+def _build_sample_payload(sample_indices, sample_ids, y_true, y_pred, y_pred_proba, shap_values, feature_name_map):
     payload = []
-    for idx in sample_indices:
+    for pos, idx in enumerate(sample_indices):
+        feature_importance = _build_sample_shap_map(shap_values[pos])
         payload.append({
             'sample_id': str(sample_ids[idx]),
             'true_label': int(y_true[idx]),
             'predicted_label': int(y_pred[idx]),
             'prediction_probability': float(y_pred_proba[idx]),
-            'feature_importance': feature_importance
+            'feature_importance': feature_importance,
+            'feature_name_map': feature_name_map
         })
     return payload
 
@@ -7604,6 +7479,7 @@ def _write_sample_report(report_path, samples, sample_name, logger):
             json.dump([], f, ensure_ascii=False, indent=2)
 
 def _export_train_all_sample_reports(logger):
+    logger.debug('进入样本报告导出流程')
     import lightgbm as lgb
     import numpy as np
     import pandas as pd
@@ -7685,10 +7561,30 @@ def _export_train_all_sample_reports(logger):
         test_fp_count = int(np.sum(false_positive_mask & test_mask))
         test_fn_count = int(np.sum(false_negative_mask & test_mask))
 
-        feature_importance = _build_feature_importance_dict(model, feature_columns)
-        hard_samples = _build_sample_payload(np.where(hard_mask)[0], sample_ids, y_true, y_pred, y_pred_proba, feature_importance)
-        false_positive_samples = _build_sample_payload(np.where(false_positive_mask)[0], sample_ids, y_true, y_pred, y_pred_proba, feature_importance)
-        false_negative_samples = _build_sample_payload(np.where(false_negative_mask)[0], sample_ids, y_true, y_pred, y_pred_proba, feature_importance)
+        feature_name_map = _build_feature_name_map(model, feature_columns)
+        hard_indices = np.where(hard_mask)[0]
+        fp_indices = np.where(false_positive_mask)[0]
+        fn_indices = np.where(false_negative_mask)[0]
+        shap_batch_size = 256
+        def _predict_shap_for_indices(indices):
+            if indices.size == 0:
+                return np.zeros((0, len(feature_columns) + 1), dtype=np.float32)
+            chunks = []
+            for start in range(0, indices.size, shap_batch_size):
+                batch_idx = indices[start:start + shap_batch_size]
+                batch_X = X[batch_idx]
+                if isinstance(best_iteration, int) and best_iteration > 0:
+                    batch_shap = model.predict(batch_X, num_iteration=best_iteration, pred_contrib=True)
+                else:
+                    batch_shap = model.predict(batch_X, pred_contrib=True)
+                chunks.append(np.asarray(batch_shap, dtype=np.float32))
+            return np.vstack(chunks) if chunks else np.zeros((0, len(feature_columns) + 1), dtype=np.float32)
+        hard_shap = _predict_shap_for_indices(hard_indices)
+        fp_shap = _predict_shap_for_indices(fp_indices)
+        fn_shap = _predict_shap_for_indices(fn_indices)
+        hard_samples = _build_sample_payload(hard_indices, sample_ids, y_true, y_pred, y_pred_proba, hard_shap, feature_name_map)
+        false_positive_samples = _build_sample_payload(fp_indices, sample_ids, y_true, y_pred, y_pred_proba, fp_shap, feature_name_map)
+        false_negative_samples = _build_sample_payload(fn_indices, sample_ids, y_true, y_pred, y_pred_proba, fn_shap, feature_name_map)
     except Exception as e:
         logger.warning(f'样本分析阶段失败，已输出空结果文件: {e}')
 
@@ -7718,7 +7614,12 @@ def _export_train_all_sample_reports(logger):
     }
 
 def main():
+    log_level = os.environ.get('KVD_LOG_LEVEL', 'DEBUG')
+    configure_logging(log_file_name='app.log', level=log_level)
+    set_log_level(log_level)
+    redirect_print_to_logger('kolo.print')
     logger = get_logger('kolo')
+    logger.debug(f'进入主流程 argv={sys.argv}')
     parser = argparse.ArgumentParser(prog='KoloVirusDetector', description='KoloVirusDetector 项目入口')
     subs = parser.add_subparsers(dest='command', required=True)
 
@@ -7789,10 +7690,6 @@ def main():
     sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
     sp_train_all.add_argument('--skip-tuning', action='store_true', help=HELP_SKIP_TUNING)
     sp_train_all.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
-
-    sp_feature_select = subs.add_parser('feature-select', help='执行特征筛选并输出可复现规则')
-    sp_feature_select.add_argument('--use-existing-features', action='store_true', default=True, help=HELP_USE_EXISTING_FEATURES)
-    sp_feature_select.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
     
     sp_autotune = subs.add_parser('auto-tune', help='AutoML超参调优与交叉测试对比')
     sp_autotune.add_argument('--method', type=str, default=AUTOML_METHOD_DEFAULT, choices=['optuna', 'hyperopt'], help=HELP_AUTOML_METHOD)
@@ -7999,13 +7896,6 @@ def main():
         except Exception as e:
             logger.error(f'一键训练失败: {e}')
             raise
-    elif args.command == 'feature-select':
-        from training import feature_selection
-        try:
-            feature_selection.main(args)
-        except Exception as e:
-            logger.error(f'特征筛选失败: {e}')
-            raise
     elif args.command == 'auto-tune':
         from training import automl
         try:
@@ -8016,4 +7906,9 @@ def main():
             raise
 
 if __name__ == '__main__':
-    main()
+    entry_logger = get_logger('kolo.entry')
+    try:
+        main()
+    except Exception as e:
+        entry_logger.error(f'主程序执行失败: {e}', exc_info=True)
+        raise
