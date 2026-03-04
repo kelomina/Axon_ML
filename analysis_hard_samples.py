@@ -1,4 +1,5 @@
 import argparse
+import ast
 import json
 import re
 from pathlib import Path
@@ -10,6 +11,60 @@ import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.preprocessing import StandardScaler
+
+STAT_NAMES_DEFAULT = [
+    "byte_mean","byte_std","byte_min","byte_max","byte_median","byte_q25","byte_q75",
+    "count_0","count_255","count_0x90","count_printable","entropy",
+    "seg0_mean","seg0_std","seg0_entropy",
+    "seg1_mean","seg1_std","seg1_entropy",
+    "seg2_mean","seg2_std","seg2_entropy",
+    "chunk_mean_0","chunk_mean_1","chunk_mean_2","chunk_mean_3","chunk_mean_4",
+    "chunk_mean_5","chunk_mean_6","chunk_mean_7","chunk_mean_8","chunk_mean_9",
+    "chunk_std_0","chunk_std_1","chunk_std_2","chunk_std_3","chunk_std_4",
+    "chunk_std_5","chunk_std_6","chunk_std_7","chunk_std_8","chunk_std_9",
+    "chunk_mean_diff_mean_abs","chunk_mean_diff_std","chunk_mean_diff_max","chunk_mean_diff_min",
+    "chunk_std_diff_mean_abs","chunk_std_diff_std","chunk_std_diff_max","chunk_std_diff_min"
+]
+
+
+def _parse_python_list(text: str, var_name: str) -> list[str]:
+    pattern = rf"{var_name}\s*=\s*\[([\s\S]*?)\]"
+    m = re.search(pattern, text)
+    if not m:
+        return []
+    body = m.group(1)
+    try:
+        parsed = ast.literal_eval("[" + body + "]")
+    except Exception:
+        return []
+    out = []
+    for x in parsed:
+        if isinstance(x, str):
+            out.append(x)
+    return out
+
+
+def build_feature_name_mapping(main_py: Path, max_col_idx: int) -> dict[str, str]:
+    text = ""
+    try:
+        text = main_py.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        text = ""
+    pe_feature_order = _parse_python_list(text, "PE_FEATURE_ORDER")
+    stat_names = _parse_python_list(text, "STAT_NAMES")
+    if len(stat_names) != 49:
+        stat_names = STAT_NAMES_DEFAULT
+    names = list(stat_names)
+    names.extend([f"lw_{i}" for i in range(256)])
+    names.extend(pe_feature_order)
+    target_len = max_col_idx + 1
+    if len(names) < target_len:
+        for i in range(len(names), target_len):
+            names.append(f"pe_extra_{i - (49 + 256)}")
+    mapping = {}
+    for i in range(target_len):
+        mapping[f"Column_{i}"] = names[i] if i < len(names) else f"unknown_{i}"
+    return mapping
 
 
 def resolve_json_path(json_arg: str | None, cluster_dir: Path, prefixes: list[str], arg_name: str) -> Path:
@@ -54,7 +109,13 @@ def load_samples(json_path: Path, sample_type: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def summarize_file(df: pd.DataFrame, output_dir: Path, file_name: str, topn: int = 20) -> dict:
+def summarize_file(
+    df: pd.DataFrame,
+    output_dir: Path,
+    file_name: str,
+    topn: int = 20,
+    feature_name_mapping: dict[str, str] | None = None,
+) -> dict:
     feature_cols = [c for c in df.columns if re.match(r"^Column_\d+$", c)]
     feature_cols = sorted(feature_cols, key=lambda x: int(x.split("_")[1]))
     stats = {
@@ -69,8 +130,13 @@ def summarize_file(df: pd.DataFrame, output_dir: Path, file_name: str, topn: int
         desc = df[feature_cols].describe(percentiles=[0.05, 0.25, 0.5, 0.75, 0.95]).T
         desc["range"] = desc["max"] - desc["min"]
         desc = desc.sort_values("range", ascending=False)
+        if feature_name_mapping:
+            desc["feature_name"] = [feature_name_mapping.get(idx, "unknown") for idx in desc.index]
         desc.head(topn).to_csv(output_dir / f"{Path(file_name).stem}_top{topn}_feature_ranges.csv", encoding="utf-8-sig")
-        stats["top_feature_ranges"] = desc.head(topn)[["min", "max", "range", "mean", "std"]].to_dict(orient="index")
+        cols_for_json = ["min", "max", "range", "mean", "std"]
+        if "feature_name" in desc.columns:
+            cols_for_json.append("feature_name")
+        stats["top_feature_ranges"] = desc.head(topn)[cols_for_json].to_dict(orient="index")
     return stats
 
 
@@ -136,6 +202,7 @@ def rank_misclassification_features(df_all: pd.DataFrame, feature_df: pd.DataFra
     y_mis = (df_all["true_label"].astype(int) != df_all["predicted_label"].astype(int)).astype(int).values
     if len(np.unique(y_mis)) < 2:
         importance = feature_df.var(axis=0).sort_values(ascending=False)
+        importance = importance[importance > 0]
         return pd.DataFrame({"feature": importance.index, "importance": importance.values}).head(topk)
     model = ExtraTreesClassifier(
         n_estimators=400,
@@ -145,6 +212,7 @@ def rank_misclassification_features(df_all: pd.DataFrame, feature_df: pd.DataFra
     )
     model.fit(feature_df.values, y_mis)
     imp = pd.Series(model.feature_importances_, index=feature_df.columns).sort_values(ascending=False)
+    imp = imp[imp > 0]
     return pd.DataFrame({"feature": imp.index, "importance": imp.values}).head(topk)
 
 
@@ -183,7 +251,9 @@ def compute_threshold_metrics(df_all: pd.DataFrame, baseline_threshold: float = 
 
 
 def generate_diff_report(output_dir: Path, top_features_df: pd.DataFrame, main_py: Path) -> Path:
-    feature_lines = "\n".join([f"- {r.feature}: {r.importance:.6f}" for r in top_features_df.itertuples(index=False)])
+    feature_lines = "\n".join([
+        f"- {r.feature} ({r.feature_name}): {r.importance:.6f}" for r in top_features_df.itertuples(index=False)
+    ])
     if not feature_lines:
         feature_lines = "- 无可用特征"
     existing = main_py.read_text(encoding="utf-8", errors="ignore")
@@ -239,7 +309,7 @@ def render_summary_report(output_dir: Path, per_file_stats: list[dict], top_feat
         lines.append("- 无")
     else:
         for row in top_features_df.itertuples(index=False):
-            lines.append(f"- {row.feature}: {row.importance:.6f}")
+            lines.append(f"- {row.feature} ({row.feature_name}): {row.importance:.6f}")
     lines.extend(
         [
             "",
@@ -288,20 +358,28 @@ def main() -> None:
     df_fp = load_samples(fp_json_path, "false_positives")
     df_fn = load_samples(fn_json_path, "false_negatives")
     df_all = pd.concat([df_hard, df_fp, df_fn], ignore_index=True)
+    feature_df, feature_cols = build_feature_matrix(df_all)
+    max_col_idx = 0
+    if feature_cols:
+        max_col_idx = max(int(c.split("_")[1]) for c in feature_cols)
+    name_mapping = build_feature_name_mapping(Path(args.main_py), max_col_idx)
 
     per_file_stats = [
-        summarize_file(df_hard, output_dir, hard_json_path.name),
-        summarize_file(df_fp, output_dir, fp_json_path.name),
-        summarize_file(df_fn, output_dir, fn_json_path.name),
+        summarize_file(df_hard, output_dir, hard_json_path.name, feature_name_mapping=name_mapping),
+        summarize_file(df_fp, output_dir, fp_json_path.name, feature_name_mapping=name_mapping),
+        summarize_file(df_fn, output_dir, fn_json_path.name, feature_name_mapping=name_mapping),
     ]
     (output_dir / "per_file_stats.json").write_text(json.dumps(per_file_stats, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    feature_df, feature_cols = build_feature_matrix(df_all)
     plot_boxplots(df_all, feature_cols, output_dir)
     plot_group_heatmap(df_all, feature_cols, output_dir)
     plot_pca_scatter(feature_df, df_all, output_dir)
 
     top_features_df = rank_misclassification_features(df_all, feature_df, args.top_k)
+    if not top_features_df.empty:
+        top_features_df["feature_name"] = top_features_df["feature"].map(name_mapping).fillna("unknown")
+    else:
+        top_features_df["feature_name"] = pd.Series(dtype="str")
     top_features_df.to_csv(output_dir / "topk_misclassification_features.csv", index=False, encoding="utf-8-sig")
     threshold_metrics = compute_threshold_metrics(df_all, baseline_threshold=0.98)
     (output_dir / "threshold_metrics.json").write_text(json.dumps(threshold_metrics, ensure_ascii=False, indent=2), encoding="utf-8")

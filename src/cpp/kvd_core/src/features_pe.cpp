@@ -824,6 +824,47 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
   features["suspicious_section_score"] = clamp01(rwx_sections_ratio_f + safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f) + alignment_mismatch_ratio_f);
   features["api_behavior_mix_score"] = clamp01(network_ratio_f + process_ratio_f + fs_ratio_f + reg_ratio_f);
   features["overlay_entropy_weighted"] = clamp01(get_or_zero(features, "overlay_entropy") * get_or_zero(features, "trailing_data_ratio"));
+  float executable_writable_ratio_f = get_or_zero(features, "executable_writable_ratio");
+  float max_section_entropy_f = get_or_zero(features, "max_section_entropy");
+  float checksum_zero_flag_f = get_or_zero(features, "checksum_zero_flag");
+  float entry_nonstandard_f = get_or_zero(features, "entry_in_nonstandard_section_flag");
+  float syscall_ratio_f = get_or_zero(features, "syscall_api_ratio");
+  float ordinal_ratio_f = get_or_zero(features, "import_ordinal_only_ratio");
+  float imported_system_ratio_f = get_or_zero(features, "imported_system_dlls_ratio");
+  float has_nx_f = get_or_zero(features, "has_nx_compat");
+  float has_aslr_f = get_or_zero(features, "has_aslr");
+  float has_seh_f = get_or_zero(features, "has_seh");
+  float has_guard_cf_f = get_or_zero(features, "has_guard_cf");
+  float code_ratio_f = get_or_zero(features, "code_section_ratio");
+  float data_ratio_f = get_or_zero(features, "data_section_ratio");
+  float nonstandard_exec_ratio_f = get_or_zero(features, "non_standard_executable_sections_ratio");
+  float has_signature_f = get_or_zero(features, "has_signature");
+  float version_info_f = get_or_zero(features, "version_info_present");
+  float has_debug_info_f = get_or_zero(features, "has_debug_info");
+  features["import_execution_pressure"] = clamp01(get_or_zero(features, "imports_per_section") * (0.5f + executable_writable_ratio_f));
+  features["entropy_structure_risk"] = clamp01(
+      0.45f * packed_sections_ratio_f +
+      0.25f * max_section_entropy_f +
+      0.30f * get_or_zero(features, "overlay_entropy_weighted"));
+  features["security_mitigation_gap"] = clamp01(
+      ((1.0f - has_nx_f) + (1.0f - has_aslr_f) + (1.0f - has_seh_f) + (1.0f - has_guard_cf_f)) * 0.25f);
+  features["suspicious_import_mix"] = clamp01(
+      syscall_ratio_f +
+      ordinal_ratio_f +
+      0.5f * get_or_zero(features, "api_behavior_mix_score") -
+      0.25f * imported_system_ratio_f);
+  features["header_consistency_risk"] = clamp01(
+      (checksum_zero_flag_f + entry_nonstandard_f + alignment_mismatch_ratio_f) / 3.0f);
+  features["section_balance_risk"] = clamp01(
+      std::fabs(code_ratio_f - data_ratio_f) + rwx_sections_ratio_f + nonstandard_exec_ratio_f);
+  features["benign_metadata_score"] = clamp01(
+      0.40f * has_signature_f +
+      0.35f * version_info_f +
+      0.25f * (imported_system_ratio_f + (has_debug_info_f > 0.0f ? 1.0f : 0.0f)) * 0.5f);
+  features["packer_api_overlay_risk"] = clamp01(
+      0.40f * packed_sections_ratio_f +
+      0.25f * get_or_zero(features, "overlay_high_entropy_flag") +
+      0.35f * get_or_zero(features, "api_behavior_mix_score"));
 
   return features;
   } catch (...) {
@@ -852,7 +893,9 @@ static std::vector<std::string> build_feature_order() {
       "special_char_ratio","long_sections_ratio","short_sections_ratio","dll_imports_entropy","api_imports_entropy",
       "imported_system_dlls_ratio","resources_count","alignment_mismatch_count","alignment_mismatch_ratio","entry_point_ratio",
       "syscall_api_ratio","import_ordinal_only_count","import_ordinal_only_ratio","avg_imports_per_dll","exports_name_ratio","entry_in_nonstandard_section_flag","tls_callbacks_count","reloc_blocks_count","reloc_entries_count","checksum_zero_flag","api_network_ratio","api_process_ratio","api_filesystem_ratio","api_registry_ratio","overlay_entropy","overlay_high_entropy_flag","packer_keyword_hits_count","packer_keyword_hits_ratio",
-      "imports_per_section","entropy_packed_interaction","suspicious_section_score","api_behavior_mix_score","overlay_entropy_weighted"};
+      "imports_per_section","entropy_packed_interaction","suspicious_section_score","api_behavior_mix_score","overlay_entropy_weighted",
+      "import_execution_pressure","entropy_structure_risk","security_mitigation_gap","suspicious_import_mix","header_consistency_risk",
+      "section_balance_risk","benign_metadata_score","packer_api_overlay_risk"};
 
   std::vector<std::string> order = BASE;
   order.reserve(1500);
