@@ -1548,6 +1548,7 @@ _MAX_BYTES = 100 * 1024 * 1024
 _BACKUP_COUNT = 6
 _RETENTION_DAYS = 30
 _PRINT_REDIRECT_INSTALLED = False
+_PRINT_LOGGER_NAME = 'print_redirect'
 
 def _project_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -1626,19 +1627,26 @@ def configure_logging(log_file_name=_DEFAULT_LOG_FILE, level=_DEFAULT_LOG_LEVEL)
     logging.captureWarnings(True)
     return root_logger
 
+def _redirected_print(*args, **kwargs):
+    sep = kwargs.get('sep', ' ')
+    end = kwargs.get('end', '\n')
+    message = sep.join(str(arg) for arg in args)
+    if end != '\n':
+        message += end
+    text = message.rstrip('\n')
+    if text:
+        logging.getLogger(_PRINT_LOGGER_NAME).info(text)
+
+_redirected_print.__name__ = 'print'
+_redirected_print.__qualname__ = 'print'
+_redirected_print.__module__ = 'builtins'
+print = _redirected_print
+
 def redirect_print_to_logger(logger_name='print_redirect'):
-    global _PRINT_REDIRECT_INSTALLED
+    global _PRINT_REDIRECT_INSTALLED, _PRINT_LOGGER_NAME
     if _PRINT_REDIRECT_INSTALLED:
         return
-    def _redirected_print(*args, **kwargs):
-        sep = kwargs.get('sep', ' ')
-        end = kwargs.get('end', '\n')
-        message = sep.join(str(arg) for arg in args)
-        if end != '\n':
-            message += end
-        text = message.rstrip('\n')
-        if text:
-            logging.getLogger(logger_name).info(text)
+    _PRINT_LOGGER_NAME = logger_name
     builtins.print = _redirected_print
     _PRINT_REDIRECT_INSTALLED = True
 
