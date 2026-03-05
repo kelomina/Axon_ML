@@ -1542,7 +1542,7 @@ from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 
 _LOG_FORMAT = '%(asctime)s-%(levelname)s-%(module)s-%(funcName)s-%(lineno)d-%(message)s'
-_DEFAULT_LOG_LEVEL = logging.DEBUG
+_DEFAULT_LOG_LEVEL = logging.INFO
 _DEFAULT_LOG_FILE = 'app.log'
 _MAX_BYTES = 100 * 1024 * 1024
 _BACKUP_COUNT = 6
@@ -4441,6 +4441,7 @@ from training.train_lightgbm import train_lightgbm_model
 from training.evaluate import evaluate_model
 from training.model_io import save_model, load_existing_model
 from training.incremental import incremental_train_lightgbm_model
+from features.statistics import extract_statistical_features
 from features.extractor_in_memory import PE_FEATURE_ORDER
 from config.config import PROCESSED_DATA_DIR, METADATA_FILE, SAVED_MODEL_DIR, MODEL_PATH, FEATURES_PKL_PATH, DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS, DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS, HELP_MAX_FILE_SIZE, HELP_FAST_DEV_RUN, HELP_SAVE_FEATURES, HELP_FINETUNE_ON_FALSE_POSITIVES, HELP_INCREMENTAL_TRAINING, HELP_INCREMENTAL_DATA_DIR, HELP_INCREMENTAL_RAW_DATA_DIR, HELP_FILE_EXTENSIONS, HELP_LABEL_INFERENCE, HELP_NUM_BOOST_ROUND, HELP_INCREMENTAL_ROUNDS, HELP_INCREMENTAL_EARLY_STOPPING, HELP_MAX_FINETUNE_ITERATIONS, HELP_USE_EXISTING_FEATURES, FEATURE_SCALER_PATH, THRESHOLD_REPORT_PATH, HDBSCAN_SAVE_DIR, PREDICTION_THRESHOLD, OHEM_ENABLED, OHEM_RATIO, OHEM_WEIGHT_FACTOR, MISCLASSIFIED_FP_WEIGHT, MISCLASSIFIED_FN_WEIGHT, MISCLASSIFIED_HARD_WEIGHT, RESOURCES_DIR
 
@@ -4633,12 +4634,22 @@ def _optimize_threshold(y_true, y_proba, baseline_threshold):
     return best_threshold, baseline, best_metric
 
 
+def _expected_feature_dim():
+    pe_dim = int(len(PE_FEATURE_ORDER))
+    dummy_bytes = np.zeros(1, dtype=np.uint8)
+    dummy_pe = np.zeros(pe_dim, dtype=np.float32)
+    feat = extract_statistical_features(dummy_bytes, dummy_pe, orig_length=1)
+    return int(feat.shape[0])
+
+
 def main(args):
     os.makedirs(SAVED_MODEL_DIR, exist_ok=True)
     df = None
     feature_columns = None
+    expected_dim = _expected_feature_dim()
+    reuse_existing = bool(args.use_existing_features and os.path.exists(FEATURES_PKL_PATH))
 
-    if args.use_existing_features and os.path.exists(FEATURES_PKL_PATH):
+    if reuse_existing:
 
         print("[*] Loading existing feature file...")
         try:
@@ -4650,13 +4661,17 @@ def main(args):
             X = df[feature_columns].values
 
             print(f"[+] Successfully loaded feature file, total {len(files)} samples, feature dimension: {X.shape[1]}")
+            if int(X.shape[1]) != expected_dim:
+                print(f"[!] Existing feature dimension mismatch: {X.shape[1]} != {expected_dim}")
+                print("[*] Will regenerate features from processed dataset")
+                reuse_existing = False
+                df = None
+                feature_columns = None
         except Exception as e:
 
             print(f"[!] Failed to load feature file: {e}")
-
-            print("[-] Exiting training")
-            return
-    else:
+            reuse_existing = False
+    if not reuse_existing:
         if args.incremental_training and args.incremental_data_dir:
             if args.incremental_raw_data_dir:
 
@@ -5393,8 +5408,37 @@ def main(args):
 
     classifier = FamilyClassifier()
     classifier.fit(malicious_features, cluster_labels, family_names)
-    classifier.save(os.path.join(args.save_dir, 'family_classifier.pkl'))
-    print(f"[+] Family classifier saved to: {os.path.join(args.save_dir, 'family_classifier.pkl')}")
+    pkl_output = os.path.join(args.save_dir, 'family_classifier.pkl')
+    classifier.save(pkl_output)
+    print(f"[+] Family classifier saved to: {pkl_output}")
+    cluster_ids = sorted(set(classifier.centroids.keys()) & set(classifier.thresholds.keys()) & set(classifier.family_names.keys()))
+    centroids_list = [np.asarray(classifier.centroids[cid], dtype=np.float32).tolist() for cid in cluster_ids]
+    thresholds_list = [float(classifier.thresholds[cid]) for cid in cluster_ids]
+    family_names_list = [str(classifier.family_names[cid]) for cid in cluster_ids]
+    scaler_mean = []
+    scaler_scale = []
+    if classifier.scaler is not None and hasattr(classifier.scaler, 'mean_') and hasattr(classifier.scaler, 'scale_'):
+        scaler_mean = np.asarray(classifier.scaler.mean_, dtype=np.float32).tolist()
+        scaler_scale = np.asarray(classifier.scaler.scale_, dtype=np.float32).tolist()
+    family_classifier_json = {
+        'cluster_ids': [int(x) for x in cluster_ids],
+        'centroids': centroids_list,
+        'thresholds': thresholds_list,
+        'family_names': family_names_list,
+        'scaler_mean': scaler_mean,
+        'scaler_scale': scaler_scale
+    }
+    json_output = os.path.join(args.save_dir, 'family_classifier.json')
+    with open(json_output, 'w', encoding='utf-8') as f:
+        json.dump(family_classifier_json, f, ensure_ascii=False, separators=(',', ':'))
+    print(f"[+] Family classifier json saved to: {json_output}")
+    legacy_dir = os.path.join(os.getcwd(), 'hdbscan_cluster_results')
+    legacy_json_output = os.path.join(legacy_dir, 'family_classifier.json')
+    if os.path.abspath(legacy_json_output) != os.path.abspath(json_output):
+        os.makedirs(legacy_dir, exist_ok=True)
+        with open(legacy_json_output, 'w', encoding='utf-8') as f:
+            json.dump(family_classifier_json, f, ensure_ascii=False, separators=(',', ':'))
+        print(f"[+] Family classifier json saved to: {legacy_json_output}")
 
     os.makedirs(HDBSCAN_SAVE_DIR, exist_ok=True)
     visualize_clusters(malicious_features, cluster_labels,
@@ -7698,6 +7742,10 @@ def main():
     sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
     sp_train_all.add_argument('--skip-tuning', action='store_true', help=HELP_SKIP_TUNING)
     sp_train_all.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
+
+    sp_export_family_json = subs.add_parser('export-family-json', help='从 family_classifier.pkl 快速导出 family_classifier.json')
+    sp_export_family_json.add_argument('--input', type=str, default=os.path.join(HDBSCAN_SAVE_DIR, 'family_classifier.pkl'))
+    sp_export_family_json.add_argument('--output', type=str, default=os.path.join(HDBSCAN_SAVE_DIR, 'family_classifier.json'))
     
     sp_autotune = subs.add_parser('auto-tune', help='AutoML超参调优与交叉测试对比')
     sp_autotune.add_argument('--method', type=str, default=AUTOML_METHOD_DEFAULT, choices=['optuna', 'hyperopt'], help=HELP_AUTOML_METHOD)
@@ -7903,6 +7951,15 @@ def main():
             logger.info('训练与聚类流程已完成')
         except Exception as e:
             logger.error(f'一键训练失败: {e}')
+            raise
+    elif args.command == 'export-family-json':
+        from training.export_family_classifier_json import export_family_classifier
+        from pathlib import Path
+        try:
+            export_family_classifier(Path(args.input), Path(args.output))
+            logger.info(f'已导出 family_classifier.json: {args.output}')
+        except Exception as e:
+            logger.error(f'导出 family_classifier.json 失败: {e}')
             raise
     elif args.command == 'auto-tune':
         from training import automl

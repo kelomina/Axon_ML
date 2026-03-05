@@ -13,21 +13,29 @@ static bool contains_nul(const std::string& s) {
   return std::find(s.begin(), s.end(), '\0') != s.end();
 }
 
-static std::optional<std::wstring> utf8_to_wide(const std::string& s) {
+static std::optional<std::wstring> multi_byte_to_wide(const std::string& s, unsigned int code_page, DWORD flags) {
   if (s.empty()) {
     return std::wstring();
   }
-  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  int len = MultiByteToWideChar(code_page, flags, s.data(), static_cast<int>(s.size()), nullptr, 0);
   if (len <= 0) {
     return std::nullopt;
   }
   std::wstring w;
   w.resize(static_cast<std::size_t>(len));
-  int ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), w.data(), len);
+  int ok = MultiByteToWideChar(code_page, flags, s.data(), static_cast<int>(s.size()), w.data(), len);
   if (ok != len) {
     return std::nullopt;
   }
   return w;
+}
+
+static std::optional<std::wstring> utf8_or_ansi_to_wide(const std::string& s) {
+  auto utf8 = multi_byte_to_wide(s, CP_UTF8, MB_ERR_INVALID_CHARS);
+  if (utf8) {
+    return utf8;
+  }
+  return multi_byte_to_wide(s, CP_ACP, 0);
 }
 
 static std::wstring to_lower(std::wstring s) {
@@ -41,7 +49,7 @@ std::optional<std::filesystem::path> to_filesystem_path(const std::string& path)
   if (path.empty() || contains_nul(path)) {
     return std::nullopt;
   }
-  auto w = utf8_to_wide(path);
+  auto w = utf8_or_ansi_to_wide(path);
   if (!w) {
     return std::nullopt;
   }
