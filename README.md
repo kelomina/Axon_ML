@@ -97,6 +97,259 @@ python src/python/kvd_detector/main.py serve
 - **训练参数**：`DEFAULT_NUM_BOOST_ROUND`, `DEFAULT_MAX_FILE_SIZE` (默认 64KB)。
 - **聚类参数**：`DEFAULT_MIN_CLUSTER_SIZE`, `DEFAULT_MIN_SAMPLES`。
 
+## DLL 扫描引擎调用文档
+
+### 1. DLL 与导出接口
+
+- 编译后会生成两个 DLL：`axon_engine.dll`、`signature_engine.dll`。
+- 导出函数定义见 `src/cpp/kvd_core/include/kvd/api.h`，导出表见 `src/cpp/kvd_core/src/kvd.def`。
+- 核心导出函数：
+  - `kvd_create`
+  - `kvd_destroy`
+  - `kvd_scan_path`
+  - `kvd_scan_bytes`
+  - `kvd_scan_paths`
+  - `kvd_train_path`
+  - `kvd_train_paths`
+  - `kvd_train_from_path`
+  - `kvd_signature_flush`
+  - `kvd_free`
+  - `kvd_validate_models`
+  - `kvd_extract_pe_features`
+  - `kvd_extract_pe_features_batch`
+
+### 2. 通用调用约定
+
+- 调用约定：Windows 下为 `__cdecl`。
+- `kvd_create` 成功返回非空句柄，失败返回 `nullptr`。
+- 所有 `out_json` / `out_error` 输出缓冲区由 DLL 内部分配，调用方必须用 `kvd_free` 释放。
+- 扫描类接口返回值：`0` 为成功，`!=0` 为失败。
+- `kvd_extract_pe_features` 相关接口中，特征维度固定为 `1500`。
+
+`kvd_config` 字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| model_path | const char* | 主模型路径 |
+| model_normal_path | const char* | normal 路由模型路径 |
+| model_packed_path | const char* | packed 路由模型路径 |
+| family_classifier_json_path | const char* | 家族分类器 JSON 路径 |
+| allowed_scan_root | const char* | 允许扫描的根目录 |
+| max_file_size | unsigned int | 最大读取文件大小 |
+| prediction_threshold | float | 恶意判定阈值 |
+
+`kvd_validate_models` 主要返回码：
+
+| 返回码 | 含义 |
+|---|---|
+| 0 | 模型检查通过 |
+| -1 | 参数错误 |
+| -10 | 主模型缺失 |
+| -11 | 主模型无效 |
+| -12 | 路由模型配置不完整 |
+| -13 | normal 模型缺失 |
+| -14 | normal 模型无效 |
+| -15 | packed 模型缺失 |
+| -16 | packed 模型无效 |
+| -17 | 家族分类器缺失 |
+| -18 | 家族分类器无效 |
+| -100 | 内存分配失败 |
+
+扫描结果 JSON 典型字段：
+
+```json
+{
+  "is_malware": true,
+  "confidence": 0.98,
+  "axon_malware": true,
+  "axon_score": 0.96,
+  "signature_hit": false,
+  "signature_score": 0.0,
+  "signature_reason": "",
+  "error": "",
+  "malware_family": {
+    "family_name": "example_family",
+    "cluster_id": 12,
+    "is_new_family": false
+  }
+}
+```
+
+### 3. C++ 调用示例
+
+```cpp
+#include "kvd/api.h"
+#include <windows.h>
+#include <iostream>
+#include <string>
+
+int main() {
+  HMODULE mod = LoadLibraryA("axon_engine.dll");
+  if (!mod) return 1;
+
+  using kvd_create_fn = kvd_handle* (KVD_CALL*)(const kvd_config*);
+  using kvd_destroy_fn = void (KVD_CALL*)(kvd_handle*);
+  using kvd_scan_path_fn = int (KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
+  using kvd_free_fn = void (KVD_CALL*)(char*);
+
+  auto kvd_create_p = reinterpret_cast<kvd_create_fn>(GetProcAddress(mod, "kvd_create"));
+  auto kvd_destroy_p = reinterpret_cast<kvd_destroy_fn>(GetProcAddress(mod, "kvd_destroy"));
+  auto kvd_scan_path_p = reinterpret_cast<kvd_scan_path_fn>(GetProcAddress(mod, "kvd_scan_path"));
+  auto kvd_free_p = reinterpret_cast<kvd_free_fn>(GetProcAddress(mod, "kvd_free"));
+  if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_free_p) return 2;
+
+  kvd_config cfg{};
+  cfg.model_path = "resources/weights_cluster_eval/weights/lightgbm_model.txt";
+  cfg.model_normal_path = "resources/weights_cluster_eval/weights/lightgbm_model_normal.txt";
+  cfg.model_packed_path = "resources/weights_cluster_eval/weights/lightgbm_model_packed.txt";
+  cfg.family_classifier_json_path = "hdbscan_cluster_results/family_classifier.json";
+  cfg.prediction_threshold = 0.5f;
+  cfg.max_file_size = 65536;
+
+  kvd_handle* h = kvd_create_p(&cfg);
+  if (!h) return 3;
+
+  char* out_json = nullptr;
+  size_t out_len = 0;
+  int rc = kvd_scan_path_p(h, "D:/samples/test.exe", &out_json, &out_len);
+  if (rc == 0 && out_json) {
+    std::cout.write(out_json, static_cast<std::streamsize>(out_len));
+    std::cout << std::endl;
+    kvd_free_p(out_json);
+  }
+
+  kvd_destroy_p(h);
+  return rc == 0 ? 0 : 4;
+}
+```
+
+### 4. Python 调用示例
+
+```python
+import ctypes
+import json
+
+class KvdConfig(ctypes.Structure):
+    _fields_ = [
+        ("model_path", ctypes.c_char_p),
+        ("model_normal_path", ctypes.c_char_p),
+        ("model_packed_path", ctypes.c_char_p),
+        ("family_classifier_json_path", ctypes.c_char_p),
+        ("allowed_scan_root", ctypes.c_char_p),
+        ("max_file_size", ctypes.c_uint),
+        ("prediction_threshold", ctypes.c_float),
+    ]
+
+dll = ctypes.CDLL("axon_engine.dll")
+dll.kvd_create.argtypes = [ctypes.POINTER(KvdConfig)]
+dll.kvd_create.restype = ctypes.c_void_p
+dll.kvd_destroy.argtypes = [ctypes.c_void_p]
+dll.kvd_scan_path.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+dll.kvd_scan_path.restype = ctypes.c_int
+dll.kvd_free.argtypes = [ctypes.c_char_p]
+
+cfg = KvdConfig(
+    model_path=b"resources/weights_cluster_eval/weights/lightgbm_model.txt",
+    model_normal_path=b"resources/weights_cluster_eval/weights/lightgbm_model_normal.txt",
+    model_packed_path=b"resources/weights_cluster_eval/weights/lightgbm_model_packed.txt",
+    family_classifier_json_path=b"hdbscan_cluster_results/family_classifier.json",
+    allowed_scan_root=None,
+    max_file_size=65536,
+    prediction_threshold=0.5,
+)
+
+h = dll.kvd_create(ctypes.byref(cfg))
+if not h:
+    raise RuntimeError("kvd_create failed")
+
+out_json = ctypes.c_char_p()
+out_len = ctypes.c_size_t()
+rc = dll.kvd_scan_path(h, b"D:/samples/test.exe", ctypes.byref(out_json), ctypes.byref(out_len))
+if rc != 0:
+    dll.kvd_destroy(h)
+    raise RuntimeError(f"kvd_scan_path failed: {rc}")
+
+raw = ctypes.string_at(out_json, out_len.value)
+result = json.loads(raw.decode("utf-8"))
+print(result)
+dll.kvd_free(out_json)
+dll.kvd_destroy(h)
+```
+
+### 5. JavaScript 调用示例
+
+依赖安装：
+
+```bash
+npm i ffi-napi ref-napi ref-struct-di
+```
+
+```javascript
+const ffi = require('ffi-napi')
+const ref = require('ref-napi')
+const StructDi = require('ref-struct-di')
+const Struct = StructDi(ref)
+
+const charPtr = ref.refType(ref.types.char)
+const charPtrPtr = ref.refType(charPtr)
+const sizeTPtr = ref.refType(ref.types.size_t)
+const voidPtr = ref.refType(ref.types.void)
+
+const KvdConfig = Struct({
+  model_path: charPtr,
+  model_normal_path: charPtr,
+  model_packed_path: charPtr,
+  family_classifier_json_path: charPtr,
+  allowed_scan_root: charPtr,
+  max_file_size: ref.types.uint,
+  prediction_threshold: ref.types.float
+})
+
+const kvd = ffi.Library('axon_engine', {
+  kvd_create: [voidPtr, [ref.refType(KvdConfig)]],
+  kvd_destroy: ['void', [voidPtr]],
+  kvd_scan_path: ['int', [voidPtr, 'string', charPtrPtr, sizeTPtr]],
+  kvd_free: ['void', [charPtr]]
+})
+
+const cfg = new KvdConfig({
+  model_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model.txt\0'),
+  model_normal_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_normal.txt\0'),
+  model_packed_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_packed.txt\0'),
+  family_classifier_json_path: Buffer.from('hdbscan_cluster_results/family_classifier.json\0'),
+  allowed_scan_root: ref.NULL,
+  max_file_size: 65536,
+  prediction_threshold: 0.5
+})
+
+const handle = kvd.kvd_create(cfg.ref())
+if (ref.isNull(handle)) {
+  throw new Error('kvd_create failed')
+}
+
+const outJsonPtr = ref.alloc(charPtr)
+const outLenPtr = ref.alloc(ref.types.size_t)
+const rc = kvd.kvd_scan_path(handle, 'D:/samples/test.exe', outJsonPtr, outLenPtr)
+if (rc !== 0) {
+  kvd.kvd_destroy(handle)
+  throw new Error(`kvd_scan_path failed: ${rc}`)
+}
+
+const jsonPtr = outJsonPtr.deref()
+const jsonText = ref.readCString(jsonPtr, 0)
+console.log(JSON.parse(jsonText))
+kvd.kvd_free(jsonPtr)
+kvd.kvd_destroy(handle)
+```
+
+### 6. 建议调用顺序
+
+1. 先调用 `kvd_validate_models` 检查模型文件可用性。
+2. 再调用 `kvd_create` 创建句柄。
+3. 扫描阶段调用 `kvd_scan_path` / `kvd_scan_bytes` / `kvd_scan_paths`。
+4. 每次读取完 JSON 输出后调用 `kvd_free`。
+5. 结束时调用 `kvd_destroy` 释放句柄。
+
 ## 许可证
 
 本项目遵循 [LICENSE](LICENSE) 中的规定。
