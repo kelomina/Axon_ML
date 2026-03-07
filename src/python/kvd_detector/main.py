@@ -1890,6 +1890,8 @@ class RoutingModel:
         self._torch = None
         self._idx_packed_sections = self._feature_index('packed_sections_ratio')
         self._idx_packer_hits = self._feature_index('packer_keyword_hits_count')
+        self._idx_packed_sections_pe = self._pe_feature_index('packed_sections_ratio')
+        self._idx_packer_hits_pe = self._pe_feature_index('packer_keyword_hits_count')
         self.load_models()
 
     def load_models(self):
@@ -1983,18 +1985,35 @@ class RoutingModel:
             print(f"[!] Failed to apply attention transform: {e}")
             return x
 
-    def _feature_index(self, key):
+    def _pe_feature_index(self, key):
         try:
-            return 256 + PE_FEATURE_ORDER.index(key)
+            return PE_FEATURE_ORDER.index(key)
         except ValueError:
             return None
 
+    def _feature_index(self, key):
+        rel_idx = self._pe_feature_index(key)
+        if rel_idx is None:
+            return None
+        return 49 + 256 + rel_idx
+
+    def _read_feature_column(self, x, global_idx, pe_idx):
+        n_features = x.shape[1]
+        if global_idx is not None and 0 <= global_idx < n_features:
+            return x[:, global_idx]
+        if pe_idx is not None:
+            start = n_features - PE_FEATURE_VECTOR_DIM
+            if start >= 0:
+                idx = start + pe_idx
+                if 0 <= idx < n_features:
+                    return x[:, idx]
+            if 0 <= pe_idx < n_features:
+                return x[:, pe_idx]
+        return np.zeros(len(x))
+
     def _rule_gating(self, x):
-        start = x.shape[1] - PE_FEATURE_VECTOR_DIM
-        p = self._idx_packed_sections
-        k = self._idx_packer_hits
-        ps = x[:, start + p] if p is not None else np.zeros(len(x))
-        kh = x[:, start + k] if k is not None else np.zeros(len(x))
+        ps = self._read_feature_column(x, self._idx_packed_sections, self._idx_packed_sections_pe)
+        kh = self._read_feature_column(x, self._idx_packer_hits, self._idx_packer_hits_pe)
         return np.logical_or(
             ps > PACKED_SECTIONS_RATIO_THRESHOLD,
             kh > PACKER_KEYWORD_HITS_THRESHOLD
