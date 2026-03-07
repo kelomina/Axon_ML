@@ -232,6 +232,7 @@ ROUTING_EVAL_REPORT_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_evaluation_
 ROUTING_CONFUSION_MATRIX_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_confusion_matrix.png')
 # ROUTING_ROC_AUC_PATH：路由 ROC-AUC 曲线路径；用途：评估路由门控性能；推荐值：resources/weights_cluster_eval/eval/routing_roc_auc.png
 ROUTING_ROC_AUC_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_roc_auc.png')
+ROUTING_ATTENTION_COMPARE_REPORT_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'routing_attention_comparison.json')
 # AUTOML_RESULTS_PATH：AutoML 结果路径；用途：保存调优实验结果；推荐值：resources/weights_cluster_eval/eval/automl_comparison.json
 AUTOML_RESULTS_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'automl_comparison.json')
 # DETECTED_MALICIOUS_PATHS_REPORT_PATH：恶意路径报告路径；用途：记录扫描发现的威胁；推荐值：resources/weights_cluster_eval/eval/detected_malicious_paths.txt
@@ -275,12 +276,6 @@ PACKER_KEYWORD_HITS_THRESHOLD = 0
 HDBSCAN_CLUSTER_FIG_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'hdbscan_clustering_visualization.png')
 # HDBSCAN_PCA_FIG_PATH：聚类 PCA 图路径；用途：PCA 降维可视化；推荐值：resources/weights_cluster_eval/eval/hdbscan_clustering_visualization_pca.png
 HDBSCAN_PCA_FIG_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'hdbscan_clustering_visualization_pca.png')
-GATING_GRADCAM_PATH = os.path.join(MODEL_EVAL_FIG_DIR, 'gating_gradcam.png')
-ATTENTION_BENCHMARK_DIR = os.path.join(MODEL_EVAL_FIG_DIR, 'attention_benchmark')
-ATTENTION_BENCHMARK_WEIGHTS_DIR = os.path.join(SAVED_MODEL_DIR, 'attention_benchmark')
-ATTENTION_BENCHMARK_LOG_DIR = os.path.join(ATTENTION_BENCHMARK_DIR, 'logs')
-ATTENTION_BENCHMARK_REPORT_JSON_PATH = os.path.join(ATTENTION_BENCHMARK_DIR, 'report.json')
-ATTENTION_BENCHMARK_REPORT_MD_PATH = os.path.join(ATTENTION_BENCHMARK_DIR, 'report.md')
 # 环境变量键：用于在运行时覆盖默认配置
 # ENV_LIGHTGBM_MODEL_PATH：覆盖二分类模型路径；用途：部署时灵活配置；推荐值：SCANNER_LIGHTGBM_MODEL_PATH
 ENV_LIGHTGBM_MODEL_PATH = 'SCANNER_LIGHTGBM_MODEL_PATH'
@@ -417,12 +412,6 @@ GATING_HIDDEN_DIM = 256
 GATING_OUTPUT_DIM = 2  # 0: Normal, 1: Packed
 # GATING_THRESHOLD：门控判定阈值；用途：加壳判定的概率阈值；推荐值：0.5
 GATING_THRESHOLD = 0.5
-# GATING_ATTENTION_TOKEN_DIM：自注意力分块维度；用途：将输入特征分块为序列 token；推荐值：32
-GATING_ATTENTION_TOKEN_DIM = 32
-# GATING_ATTENTION_HEADS：自注意力头数；用途：门控网络多头自注意力；推荐值：4
-GATING_ATTENTION_HEADS = 4
-# GATING_ATTENTION_LAYERS：自注意力层数；用途：门控网络编码层数；推荐值：2
-GATING_ATTENTION_LAYERS = 2
 # GATING_LEARNING_RATE：门控训练学习率；用途：优化门控网络的步长；推荐值：0.001
 GATING_LEARNING_RATE = 0.001
 # GATING_EPOCHS：门控训练轮数；用途：训练门控网络的最大轮数；推荐值：20
@@ -440,6 +429,15 @@ GATE_PACKER_RATIO = 0.1
 EXPERT_NORMAL_MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model_normal.txt')
 # EXPERT_PACKED_MODEL_PATH：加壳样本专家模型；用途：处理加壳样本的 LightGBM 模型
 EXPERT_PACKED_MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model_packed.txt')
+EXPERT_ATTENTION_TYPE = 'none'
+EXPERT_ATTENTION_HIDDEN_DIM = 256
+EXPERT_ATTENTION_HEADS = 4
+EXPERT_ATTENTION_LATENT_TOKENS = 32
+EXPERT_ATTENTION_EPOCHS = 10
+EXPERT_ATTENTION_BATCH_SIZE = 256
+EXPERT_ATTENTION_LEARNING_RATE = 0.001
+EXPERT_NORMAL_ATTENTION_PATH = os.path.join(SAVED_MODEL_DIR, 'expert_normal_attention.pt')
+EXPERT_PACKED_ATTENTION_PATH = os.path.join(SAVED_MODEL_DIR, 'expert_packed_attention.pt')
 
 # FEATURE_GATING_TOP_K：特征选择 K 值；用途：特征重要性实验中的保留数量；推荐值：1150
 FEATURE_GATING_TOP_K = 1150
@@ -1769,11 +1767,9 @@ class FamilyClassifier:
         return None, "New_Unknown_Family", True
 ''')
 
-_register_embedded("models.gating", r'''import math
-import torch
+_register_embedded("models.gating", r'''import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config.config import GATING_ATTENTION_TOKEN_DIM, GATING_ATTENTION_HEADS, GATING_ATTENTION_LAYERS
 
 class GatingMLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -1804,12 +1800,6 @@ class GatingTransformer(nn.Module):
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        # x shape: (batch_size, input_dim)
-        # Transformer expects sequence, so we might need to reshape or project
-        # Here we treat the feature vector as a single token embedding if we just project it, 
-        # but to use attention we usually need a sequence. 
-        # For simplicity, let's just project and pass through encoder as (batch, 1, hidden)
-        
         x = self.embedding(x) # (batch, hidden)
         x = x.unsqueeze(1)    # (batch, 1, hidden)
         x = self.transformer_encoder(x) # (batch, 1, hidden)
@@ -1817,202 +1807,63 @@ class GatingTransformer(nn.Module):
         x = self.fc(x)        # (batch, output)
         return x
 
-class GatingChannelAttention(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, token_dim=GATING_ATTENTION_TOKEN_DIM):
-        super(GatingChannelAttention, self).__init__()
-        self.token_dim = max(4, int(token_dim))
-        self.seq_len = int(math.ceil(float(input_dim) / float(self.token_dim)))
-        self.pad_dim = self.seq_len * self.token_dim - input_dim
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
-        mid = max(8, hidden_dim // 4)
-        self.channel_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, mid),
+class FeatureSEAttention(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super().__init__()
+        reduced_dim = max(8, min(hidden_dim, input_dim))
+        self.fc1 = nn.Linear(input_dim, reduced_dim)
+        self.fc2 = nn.Linear(reduced_dim, input_dim)
+
+    def forward(self, x):
+        weights = torch.sigmoid(self.fc2(F.relu(self.fc1(x))))
+        return x * weights
+
+class LatentSelfAttention(nn.Module):
+    def __init__(self, input_dim, hidden_dim, nhead=4, latent_tokens=32):
+        super().__init__()
+        hidden_dim = max(32, int(hidden_dim))
+        nhead = max(1, int(nhead))
+        if hidden_dim % nhead != 0:
+            hidden_dim = hidden_dim + (nhead - (hidden_dim % nhead))
+        latent_tokens = max(4, int(latent_tokens))
+        self.hidden_dim = hidden_dim
+        self.latent_tokens = latent_tokens
+        self.to_tokens = nn.Linear(input_dim, latent_tokens * hidden_dim)
+        self.attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=nhead, batch_first=True)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
             nn.ReLU(),
-            nn.Linear(mid, hidden_dim),
-            nn.Sigmoid()
+            nn.Linear(hidden_dim * 2, hidden_dim)
         )
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.to_gate = nn.Linear(latent_tokens * hidden_dim, input_dim)
 
     def forward(self, x):
-        if self.pad_dim > 0:
-            x = F.pad(x, (0, self.pad_dim))
-        x = x.view(x.size(0), self.seq_len, self.token_dim)
-        x = self.token_proj(x)
-        ch = torch.mean(x, dim=1)
-        gate = self.channel_mlp(ch).unsqueeze(1)
-        x = x * gate
-        x = torch.mean(x, dim=1)
-        x = self.norm(x)
-        x = self.fc(x)
-        return x
+        batch_size = x.shape[0]
+        tokens = self.to_tokens(x).view(batch_size, self.latent_tokens, self.hidden_dim)
+        attended, _ = self.attn(tokens, tokens, tokens, need_weights=False)
+        tokens = self.norm1(tokens + attended)
+        ffn_out = self.ffn(tokens)
+        tokens = self.norm2(tokens + ffn_out)
+        gate = torch.sigmoid(self.to_gate(tokens.reshape(batch_size, -1)))
+        return x * gate
 
-class GatingSpatialAttention(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, token_dim=GATING_ATTENTION_TOKEN_DIM):
-        super(GatingSpatialAttention, self).__init__()
-        self.token_dim = max(4, int(token_dim))
-        self.seq_len = int(math.ceil(float(input_dim) / float(self.token_dim)))
-        self.pad_dim = self.seq_len * self.token_dim - input_dim
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
-        self.spatial_conv = nn.Conv1d(2, 1, kernel_size=7, padding=3)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x):
-        if self.pad_dim > 0:
-            x = F.pad(x, (0, self.pad_dim))
-        x = x.view(x.size(0), self.seq_len, self.token_dim)
-        x = self.token_proj(x)
-        x_t = x.transpose(1, 2)
-        avg_map = torch.mean(x_t, dim=1, keepdim=True)
-        max_map = torch.max(x_t, dim=1, keepdim=True).values
-        spatial = torch.cat([avg_map, max_map], dim=1)
-        mask = torch.sigmoid(self.spatial_conv(spatial))
-        x_t = x_t * mask
-        x = x_t.transpose(1, 2)
-        x = torch.mean(x, dim=1)
-        x = self.norm(x)
-        x = self.fc(x)
-        return x
-
-class GatingCBAM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, token_dim=GATING_ATTENTION_TOKEN_DIM):
-        super(GatingCBAM, self).__init__()
-        self.token_dim = max(4, int(token_dim))
-        self.seq_len = int(math.ceil(float(input_dim) / float(self.token_dim)))
-        self.pad_dim = self.seq_len * self.token_dim - input_dim
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
-        mid = max(8, hidden_dim // 4)
-        self.channel_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, mid),
-            nn.ReLU(),
-            nn.Linear(mid, hidden_dim)
-        )
-        self.spatial_conv = nn.Conv1d(2, 1, kernel_size=7, padding=3)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x):
-        if self.pad_dim > 0:
-            x = F.pad(x, (0, self.pad_dim))
-        x = x.view(x.size(0), self.seq_len, self.token_dim)
-        x = self.token_proj(x)
-        avg_ch = torch.mean(x, dim=1)
-        max_ch = torch.max(x, dim=1).values
-        ch_attn = torch.sigmoid(self.channel_mlp(avg_ch) + self.channel_mlp(max_ch)).unsqueeze(1)
-        x = x * ch_attn
-        x_t = x.transpose(1, 2)
-        avg_map = torch.mean(x_t, dim=1, keepdim=True)
-        max_map = torch.max(x_t, dim=1, keepdim=True).values
-        sp_attn = torch.sigmoid(self.spatial_conv(torch.cat([avg_map, max_map], dim=1)))
-        x_t = x_t * sp_attn
-        x = x_t.transpose(1, 2)
-        x = torch.mean(x, dim=1)
-        x = self.norm(x)
-        x = self.fc(x)
-        return x
-
-class GatingNonLocal(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, token_dim=GATING_ATTENTION_TOKEN_DIM):
-        super(GatingNonLocal, self).__init__()
-        self.token_dim = max(4, int(token_dim))
-        self.seq_len = int(math.ceil(float(input_dim) / float(self.token_dim)))
-        self.pad_dim = self.seq_len * self.token_dim - input_dim
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
-        self.theta = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.phi = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.g = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x):
-        if self.pad_dim > 0:
-            x = F.pad(x, (0, self.pad_dim))
-        x = x.view(x.size(0), self.seq_len, self.token_dim)
-        x = self.token_proj(x)
-        theta = self.theta(x)
-        phi = self.phi(x)
-        g = self.g(x)
-        affinity = torch.matmul(theta, phi.transpose(1, 2))
-        affinity = torch.softmax(affinity / max(1.0, float(theta.size(-1))), dim=-1)
-        out = torch.matmul(affinity, g)
-        x = self.out_proj(out) + x
-        x = torch.mean(x, dim=1)
-        x = self.norm(x)
-        x = self.fc(x)
-        return x
-
-class GatingTransformerEncoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, token_dim=GATING_ATTENTION_TOKEN_DIM, nhead=GATING_ATTENTION_HEADS, num_layers=GATING_ATTENTION_LAYERS):
-        super(GatingTransformerEncoder, self).__init__()
-        self.token_dim = max(4, int(token_dim))
-        self.seq_len = int(math.ceil(float(input_dim) / float(self.token_dim)))
-        self.pad_dim = self.seq_len * self.token_dim - input_dim
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, dim_feedforward=hidden_dim * 2, dropout=0.1, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x):
-        if self.pad_dim > 0:
-            x = F.pad(x, (0, self.pad_dim))
-        x = x.view(x.size(0), self.seq_len, self.token_dim)
-        x = self.token_proj(x)
-        x = self.encoder(x)
-        x = torch.mean(x, dim=1)
-        x = self.norm(x)
-        x = self.fc(x)
-        return x
-
-class GatingSelfAttention(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, token_dim=GATING_ATTENTION_TOKEN_DIM, nhead=GATING_ATTENTION_HEADS, num_layers=GATING_ATTENTION_LAYERS):
-        super(GatingSelfAttention, self).__init__()
-        self.input_dim = input_dim
-        self.token_dim = max(4, int(token_dim))
-        self.seq_len = int(math.ceil(float(input_dim) / float(self.token_dim)))
-        self.pad_dim = self.seq_len * self.token_dim - input_dim
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, dim_feedforward=hidden_dim * 2, dropout=0.1, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.dropout = nn.Dropout(0.2)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-        self.last_attention_map = None
-
-    def forward(self, x):
-        if self.pad_dim > 0:
-            x = F.pad(x, (0, self.pad_dim))
-        x = x.view(x.size(0), self.seq_len, self.token_dim)
-        x = self.token_proj(x)
-        x = self.transformer_encoder(x)
-        attn_map = torch.matmul(x, x.transpose(1, 2))
-        attn_map = attn_map / max(1.0, float(x.size(-1)))
-        self.last_attention_map = torch.softmax(attn_map, dim=-1)
-        x = torch.mean(x, dim=1)
-        x = self.norm(x)
-        x = self.dropout(x)
-        x = self.fc(x)
-        return x
+def create_expert_attention(attention_type, input_dim, hidden_dim, nhead=4, latent_tokens=32):
+    name = str(attention_type or 'none').lower()
+    if name == 'none':
+        return None
+    if name == 'se':
+        return FeatureSEAttention(input_dim, hidden_dim)
+    if name == 'mhsa':
+        return LatentSelfAttention(input_dim, hidden_dim, nhead=nhead, latent_tokens=latent_tokens)
+    raise ValueError(f"Unknown expert attention type: {attention_type}")
 
 def create_gating_model(model_type, input_dim, hidden_dim, output_dim):
     if model_type == 'mlp':
         return GatingMLP(input_dim, hidden_dim, output_dim)
     elif model_type == 'transformer':
         return GatingTransformer(input_dim, hidden_dim, output_dim)
-    elif model_type == 'channel_attention':
-        return GatingChannelAttention(input_dim, hidden_dim, output_dim)
-    elif model_type == 'spatial_attention':
-        return GatingSpatialAttention(input_dim, hidden_dim, output_dim)
-    elif model_type == 'cbam':
-        return GatingCBAM(input_dim, hidden_dim, output_dim)
-    elif model_type == 'non_local':
-        return GatingNonLocal(input_dim, hidden_dim, output_dim)
-    elif model_type == 'transformer_encoder':
-        return GatingTransformerEncoder(input_dim, hidden_dim, output_dim)
-    elif model_type == 'self_attention':
-        return GatingSelfAttention(input_dim, hidden_dim, output_dim)
     else:
         raise ValueError(f"Unknown gating model type: {model_type}")
 ''')
@@ -2021,15 +1872,22 @@ _register_embedded("models.routing_model", r'''import os
 import numpy as np
 import lightgbm as lgb
 from features.extractor_in_memory import PE_FEATURE_ORDER
+from models.gating import create_expert_attention
 from config.config import (
     GATING_MODE, EXPERT_NORMAL_MODEL_PATH, EXPERT_PACKED_MODEL_PATH, PE_FEATURE_VECTOR_DIM,
-    PACKED_SECTIONS_RATIO_THRESHOLD, PACKER_KEYWORD_HITS_THRESHOLD
+    PACKED_SECTIONS_RATIO_THRESHOLD, PACKER_KEYWORD_HITS_THRESHOLD,
+    EXPERT_NORMAL_ATTENTION_PATH, EXPERT_PACKED_ATTENTION_PATH,
+    EXPERT_ATTENTION_TYPE, EXPERT_ATTENTION_HIDDEN_DIM, EXPERT_ATTENTION_HEADS, EXPERT_ATTENTION_LATENT_TOKENS
 )
 
 class RoutingModel:
-    def __init__(self):
+    def __init__(self, device='cpu'):
         self.expert_normal = None
         self.expert_packed = None
+        self.attention_normal = None
+        self.attention_packed = None
+        self.device = device
+        self._torch = None
         self._idx_packed_sections = self._feature_index('packed_sections_ratio')
         self._idx_packer_hits = self._feature_index('packer_keyword_hits_count')
         self.load_models()
@@ -2047,6 +1905,8 @@ class RoutingModel:
             self.expert_packed = lgb.Booster(model_file=EXPERT_PACKED_MODEL_PATH)
         else:
             print(f"[!] Packed expert model not found at {EXPERT_PACKED_MODEL_PATH}")
+        self.attention_normal = self._load_attention(EXPERT_NORMAL_ATTENTION_PATH)
+        self.attention_packed = self._load_attention(EXPERT_PACKED_ATTENTION_PATH)
 
     def predict(self, features):
         x = np.asarray(features)
@@ -2057,6 +1917,7 @@ class RoutingModel:
         if len(normal_indices) > 0:
             if self.expert_normal:
                 X_normal = x[normal_indices]
+                X_normal = self._apply_attention(X_normal, self.attention_normal)
                 pred_normal = self.expert_normal.predict(X_normal)
                 predictions[normal_indices] = pred_normal
             else:
@@ -2064,11 +1925,63 @@ class RoutingModel:
         if len(packed_indices) > 0:
             if self.expert_packed:
                 X_packed = x[packed_indices]
+                X_packed = self._apply_attention(X_packed, self.attention_packed)
                 pred_packed = self.expert_packed.predict(X_packed)
                 predictions[packed_indices] = pred_packed
             else:
                 print("[!] Expert Packed not loaded, skipping predictions for packed samples.")
         return predictions, routing_decisions
+
+    def _ensure_torch(self):
+        if self._torch is None:
+            try:
+                import torch
+                self._torch = torch
+            except Exception:
+                self._torch = False
+        return self._torch if self._torch is not False else None
+
+    def _load_attention(self, path):
+        if not path or not os.path.exists(path):
+            return None
+        torch = self._ensure_torch()
+        if torch is None:
+            return None
+        try:
+            payload = torch.load(path, map_location='cpu')
+            if not isinstance(payload, dict):
+                return None
+            att_type = payload.get('attention_type', EXPERT_ATTENTION_TYPE)
+            input_dim = int(payload.get('input_dim', 0))
+            if input_dim <= 0:
+                return None
+            hidden_dim = int(payload.get('hidden_dim', EXPERT_ATTENTION_HIDDEN_DIM))
+            heads = int(payload.get('heads', EXPERT_ATTENTION_HEADS))
+            latent_tokens = int(payload.get('latent_tokens', EXPERT_ATTENTION_LATENT_TOKENS))
+            module = create_expert_attention(att_type, input_dim, hidden_dim, nhead=heads, latent_tokens=latent_tokens)
+            if module is None:
+                return None
+            module.load_state_dict(payload.get('state_dict', {}), strict=False)
+            module.eval()
+            return module
+        except Exception as e:
+            print(f"[!] Failed to load attention model {path}: {e}")
+            return None
+
+    def _apply_attention(self, x, module):
+        if module is None:
+            return x
+        torch = self._ensure_torch()
+        if torch is None:
+            return x
+        try:
+            with torch.no_grad():
+                tensor_x = torch.as_tensor(x, dtype=torch.float32)
+                transformed = module(tensor_x).cpu().numpy()
+            return transformed
+        except Exception as e:
+            print(f"[!] Failed to apply attention transform: {e}")
+            return x
 
     def _feature_index(self, key):
         try:
@@ -3041,6 +2954,7 @@ def main(args):
 
 _register_embedded("training.train_routing", r'''import os
 import argparse
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -3049,7 +2963,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, average_precision_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score, roc_curve, roc_auc_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_score, recall_score, roc_curve, roc_auc_score
 
 from config.config import (
     GATING_MODE, GATING_INPUT_DIM, GATING_HIDDEN_DIM, GATING_OUTPUT_DIM,
@@ -3061,10 +2975,13 @@ from config.config import (
     EVAL_FONT_FAMILY, PREDICTION_THRESHOLD,
     EVAL_TOP_FEATURE_COUNT,
     PACKED_SECTIONS_RATIO_THRESHOLD, PACKER_KEYWORD_HITS_THRESHOLD,
-    GATING_GRADCAM_PATH,
-    DEFAULT_MAX_FINETUNE_ITERATIONS
+    DEFAULT_MAX_FINETUNE_ITERATIONS,
+    EXPERT_ATTENTION_TYPE, EXPERT_ATTENTION_HIDDEN_DIM, EXPERT_ATTENTION_HEADS,
+    EXPERT_ATTENTION_LATENT_TOKENS, EXPERT_ATTENTION_EPOCHS, EXPERT_ATTENTION_BATCH_SIZE,
+    EXPERT_ATTENTION_LEARNING_RATE, EXPERT_NORMAL_ATTENTION_PATH, EXPERT_PACKED_ATTENTION_PATH,
+    ROUTING_ATTENTION_COMPARE_REPORT_PATH
 )
-from models.gating import create_gating_model
+from models.gating import create_gating_model, create_expert_attention
 from training.train_lightgbm import train_lightgbm_model
 from training.data_loader import load_dataset, extract_features_from_raw_files, load_incremental_dataset
 from training.feature_io import save_features_to_pickle
@@ -3116,28 +3033,6 @@ def get_feature_semantics(index):
         return PE_FEATURE_ORDER[k]
     return 'PE特征'
 
-def generate_gradcam_heatmap(model, x_array, output_path):
-    if x_array is None or len(x_array) == 0:
-        return
-    model.eval()
-    sample = torch.tensor(x_array, dtype=torch.float32, requires_grad=True)
-    logits = model(sample)
-    target = logits[:, 1].mean()
-    model.zero_grad()
-    target.backward()
-    if sample.grad is None:
-        return
-    grad = sample.grad.detach().abs().cpu().numpy()
-    cam = np.mean(grad, axis=0, keepdims=True)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plt.figure(figsize=(14, 2.5))
-    sns.heatmap(cam, cmap='magma', cbar=True)
-    plt.xlabel('Feature Index')
-    plt.ylabel('Grad-CAM')
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-
 def evaluate_routing_system(X_test, y_test, files_test=None):
     print("\n[*] Evaluating Routing System on Test Set...")
     
@@ -3154,17 +3049,14 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
     
     # Binary Classification Metrics
     y_pred_binary = (predictions > PREDICTION_THRESHOLD).astype(int)
+    cm_main = confusion_matrix(y_test, y_pred_binary)
+    if cm_main.shape == (2, 2):
+        tn_main, fp_main, fn_main, tp_main = cm_main.ravel()
+    else:
+        tn_main = fp_main = fn_main = tp_main = 0
     
     acc = accuracy_score(y_test, y_pred_binary)
-    pre = precision_score(y_test, y_pred_binary, zero_division=0)
-    rec = recall_score(y_test, y_pred_binary, zero_division=0)
-    f1 = f1_score(y_test, y_pred_binary, zero_division=0)
-    ap = average_precision_score(y_test, predictions)
     print(f"[+] System Accuracy: {acc:.4f}")
-    print(f"[+] System Precision: {pre:.4f}")
-    print(f"[+] System Recall: {rec:.4f}")
-    print(f"[+] System F1: {f1:.4f}")
-    print(f"[+] System AP: {ap:.4f}")
     
     report = classification_report(y_test, y_pred_binary, target_names=['Benign', 'Malicious'])
     print("\n[*] Classification Report:")
@@ -3214,10 +3106,6 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
         f.write("Routing System Evaluation Report\n")
         f.write("================================\n\n")
         f.write(f"System Accuracy: {acc:.4f}\n\n")
-        f.write(f"System Precision: {pre:.4f}\n")
-        f.write(f"System Recall: {rec:.4f}\n")
-        f.write(f"System F1: {f1:.4f}\n")
-        f.write(f"System AP: {ap:.4f}\n\n")
         f.write("Classification Report:\n")
         f.write(report)
         f.write("\n\nRouting Statistics:\n")
@@ -3259,6 +3147,13 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
         print(f"[+] ROC AUC curve saved to {ROUTING_ROC_AUC_PATH}")
     except Exception as e:
         print(f"[!] Failed to generate ROC AUC curve: {e}")
+    return {
+        'accuracy': float(acc),
+        'false_positive': int(fp_main),
+        'false_negative': int(fn_main),
+        'true_positive': int(tp_main),
+        'true_negative': int(tn_main)
+    }
 
 def generate_routing_labels(X):
     """
@@ -3284,6 +3179,96 @@ def generate_routing_labels(X):
     print(f"    Normal samples: {np.sum(labels == 0)}")
     print(f"    Packed samples: {np.sum(labels == 1)}")
     return labels
+
+def _save_attention_payload(module, path, attention_type, input_dim, hidden_dim, heads, latent_tokens):
+    if module is None:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        'attention_type': str(attention_type).lower(),
+        'input_dim': int(input_dim),
+        'hidden_dim': int(hidden_dim),
+        'heads': int(heads),
+        'latent_tokens': int(latent_tokens),
+        'state_dict': module.state_dict()
+    }
+    torch.save(payload, path)
+
+def _train_expert_attention(X_train, y_train, X_val, y_val, attention_type, save_path, args):
+    attention_name = str(attention_type or 'none').lower()
+    if attention_name == 'none':
+        return None
+    if len(X_train) == 0:
+        return None
+    input_dim = X_train.shape[1]
+    hidden_dim = int(getattr(args, 'expert_attention_hidden_dim', EXPERT_ATTENTION_HIDDEN_DIM))
+    heads = int(getattr(args, 'expert_attention_heads', EXPERT_ATTENTION_HEADS))
+    latent_tokens = int(getattr(args, 'expert_attention_latent_tokens', EXPERT_ATTENTION_LATENT_TOKENS))
+    epochs = int(getattr(args, 'expert_attention_epochs', EXPERT_ATTENTION_EPOCHS))
+    batch_size = int(getattr(args, 'expert_attention_batch_size', EXPERT_ATTENTION_BATCH_SIZE))
+    learning_rate = float(getattr(args, 'expert_attention_lr', EXPERT_ATTENTION_LEARNING_RATE))
+    module = create_expert_attention(attention_name, input_dim, hidden_dim, nhead=heads, latent_tokens=latent_tokens)
+    if module is None:
+        return None
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    module = module.to(device)
+    head = nn.Linear(input_dim, 1).to(device)
+    params = list(module.parameters()) + list(head.parameters())
+    optimizer = optim.Adam(params, lr=learning_rate)
+    y_train_arr = np.asarray(y_train, dtype=np.float32)
+    pos_count = float(np.sum(y_train_arr == 1))
+    neg_count = float(np.sum(y_train_arr == 0))
+    pos_weight = torch.tensor([neg_count / max(1.0, pos_count)], dtype=torch.float32, device=device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    train_dataset = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train_arr))
+    val_dataset = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(np.asarray(y_val, dtype=np.float32)))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    best_val_loss = float('inf')
+    best_state = None
+    for _ in range(max(1, epochs)):
+        module.train()
+        head.train()
+        for inputs, labels in train_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device).unsqueeze(1)
+            optimizer.zero_grad()
+            transformed = module(inputs)
+            logits = head(transformed)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
+        module.eval()
+        head.eval()
+        val_losses = []
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs = inputs.to(device)
+                labels = labels.to(device).unsqueeze(1)
+                transformed = module(inputs)
+                logits = head(transformed)
+                val_loss = criterion(logits, labels)
+                val_losses.append(float(val_loss.detach().cpu().item()))
+        mean_val_loss = float(np.mean(val_losses)) if val_losses else float('inf')
+        if mean_val_loss <= best_val_loss:
+            best_val_loss = mean_val_loss
+            best_state = {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
+    if best_state is not None:
+        module.load_state_dict(best_state, strict=False)
+    module = module.to('cpu')
+    module.eval()
+    _save_attention_payload(module, save_path, attention_name, input_dim, hidden_dim, heads, latent_tokens)
+    return module
+
+def _apply_attention_transform(X, attention_module):
+    if attention_module is None:
+        return X
+    if len(X) == 0:
+        return X
+    with torch.no_grad():
+        tensor_x = torch.as_tensor(X, dtype=torch.float32)
+        transformed = attention_module(tensor_x).cpu().numpy()
+    return transformed
 
 def train_gating_model_process(X_train, y_train, X_val, y_val):
     print(f"[*] Training Gating Model ({GATING_MODE})...")
@@ -3328,24 +3313,14 @@ def train_gating_model_process(X_train, y_train, X_val, y_val):
             best_val_acc = val_acc
             torch.save(model.state_dict(), GATING_MODEL_PATH)
     print(f"[+] Gating Model saved to {GATING_MODEL_PATH} (Best Acc: {best_val_acc:.4f})")
-    try:
-        sample_count = min(256, len(X_val))
-        if sample_count > 0:
-            gradcam_model = create_gating_model(GATING_MODE, GATING_INPUT_DIM, GATING_HIDDEN_DIM, GATING_OUTPUT_DIM)
-            gradcam_model.load_state_dict(torch.load(GATING_MODEL_PATH, map_location='cpu'))
-            generate_gradcam_heatmap(gradcam_model, X_val[:sample_count], GATING_GRADCAM_PATH)
-            print(f"[+] Grad-CAM heatmap saved to {GATING_GRADCAM_PATH}")
-    except Exception as e:
-        print(f"[!] Grad-CAM generation skipped: {e}")
     return model
 
-def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_train, files_val, 
-                                     model_path, args, expert_name="Expert"):
-    """
-    Train an expert model with optional incremental training and False Positive finetuning.
-    """
+def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_train, files_val,
+                                     model_path, args, expert_name="Expert", attention_type='none', attention_path=None):
     print(f"\n[*] Training {expert_name}...")
-    
+    attention_model = _train_expert_attention(X_train, y_train, X_val, y_val, attention_type, attention_path, args)
+    X_train_att = _apply_attention_transform(X_train, attention_model)
+    X_val_att = _apply_attention_transform(X_val, attention_model)
     existing_model = None
     inc_training = getattr(args, 'incremental_training', False)
     inc_rounds = getattr(args, 'incremental_rounds', DEFAULT_INCREMENTAL_ROUNDS)
@@ -3354,11 +3329,9 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
     if inc_training and os.path.exists(model_path):
         print(f"    Loading existing model for incremental training: {model_path}")
         existing_model = load_existing_model(model_path)
-
-    model = None
     if existing_model:
         model = train_lightgbm_model(
-            X_train, y_train, X_val, y_val, 
+            X_train_att, y_train, X_val_att, y_val,
             files_train=files_train,
             num_boost_round=inc_rounds,
             init_model=existing_model,
@@ -3366,56 +3339,35 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
         )
     else:
         model = train_lightgbm_model(
-            X_train, y_train, X_val, y_val,
+            X_train_att, y_train, X_val_att, y_val,
             files_train=files_train,
             num_boost_round=num_rounds,
             params_override=getattr(args, 'override_params', None)
         )
-
     if fp_finetune:
         print(f"[*] Starting False Positive Finetuning for {expert_name}...")
-        
-        # We need to evaluate on a hold-out set to find FPs. 
-        # Here we use X_val as a proxy if we don't have a separate test set passed in.
-        # But wait, we should really use the X_val FPs to improve training? 
-        # Standard practice: Use Validation FPs to hard-mine.
-        
         current_X_train = X_train
         current_y_train = y_train
         current_files_train = files_train
-
         max_targeted_iterations = DEFAULT_MAX_FINETUNE_ITERATIONS
         for i in range(max_targeted_iterations):
-            # Evaluate on Validation Set
-            # Note: We use X_val to find FPs, then add them to Train.
-            # This "leaks" Val into Train, but for FP mining it's often accepted or we need a 3rd split.
-            # Here we follow the aggressive approach.
-            
-            y_pred_proba = model.predict(X_val)
+            current_X_train_att = _apply_attention_transform(current_X_train, attention_model)
+            y_pred_proba = model.predict(X_val_att)
             y_pred = (y_pred_proba > PREDICTION_THRESHOLD).astype(int)
-            
-            # Find FPs
             fp_indices = np.where((y_val == 0) & (y_pred == 1))[0]
             if len(fp_indices) == 0:
                 print(f"    [Round {i+1}] No False Positives found in validation set.")
                 break
-                
             print(f"    [Round {i+1}] Found {len(fp_indices)} False Positives. Retraining...")
-            
-            # Extract FP samples
             X_fps = X_val[fp_indices]
             y_fps = y_val[fp_indices]
             files_fps = [files_val[idx] for idx in fp_indices]
-            
-            # Add to Training Data (Augmentation)
-            # We assume these are "hard" negatives.
             current_X_train = np.vstack([current_X_train, X_fps])
             current_y_train = np.concatenate([current_y_train, y_fps])
             current_files_train = current_files_train + files_fps
-            
-            # Retrain (Incremental/Continued)
+            current_X_train_att = _apply_attention_transform(current_X_train, attention_model)
             model = train_lightgbm_model(
-                current_X_train, current_y_train, X_val, y_val,
+                current_X_train_att, current_y_train, X_val_att, y_val,
                 files_train=current_files_train,
                 false_positive_files=files_fps,
                 num_boost_round=num_rounds,
@@ -3423,19 +3375,64 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
                 iteration=i+2,
                 params_override=getattr(args, 'override_params', None)
             )
-            
     model.save_model(model_path)
     print(f"[+] {expert_name} saved to {model_path}")
     return model
 
+def run_attention_comparison(args):
+    compare_types = getattr(args, 'compare_attention_types', None)
+    if not compare_types:
+        compare_types = ['none', 'se', 'mhsa']
+    compare_types = [str(item).lower() for item in compare_types]
+    unique_types = []
+    for item in ['none'] + compare_types:
+        if item not in unique_types:
+            unique_types.append(item)
+    baseline_fp = int(getattr(args, 'baseline_fp', 41))
+    baseline_fn = int(getattr(args, 'baseline_fn', 687))
+    results = []
+    for attention_type in unique_types:
+        local_args = argparse.Namespace(**vars(args))
+        local_args.routing_compare = False
+        local_args.expert_attention_type = attention_type
+        print(f"\n[*] Running routing experiment attention={attention_type}")
+        metrics = main(local_args)
+        if metrics is None:
+            continue
+        fp = int(metrics.get('false_positive', 0))
+        fn = int(metrics.get('false_negative', 0))
+        total_error = fp + fn
+        baseline_total = baseline_fp + baseline_fn
+        results.append({
+            'attention_type': attention_type,
+            'false_positive': fp,
+            'false_negative': fn,
+            'total_error': total_error,
+            'delta_fp': fp - baseline_fp,
+            'delta_fn': fn - baseline_fn,
+            'delta_total_error': total_error - baseline_total,
+            'accuracy': float(metrics.get('accuracy', 0.0))
+        })
+    output = {
+        'baseline': {
+            'false_positive': baseline_fp,
+            'false_negative': baseline_fn,
+            'total_error': baseline_fp + baseline_fn
+        },
+        'results': results
+    }
+    os.makedirs(os.path.dirname(ROUTING_ATTENTION_COMPARE_REPORT_PATH), exist_ok=True)
+    with open(ROUTING_ATTENTION_COMPARE_REPORT_PATH, 'w', encoding='utf-8') as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+    print(f"[+] Attention comparison report saved to {ROUTING_ATTENTION_COMPARE_REPORT_PATH}")
+    return output
+
 def main(args=None):
-    # Default Args Handling if None (for direct script execution compatibility)
     if args is None:
         parser = argparse.ArgumentParser()
-        # Add minimal defaults or just rely on config
-        # But really this function expects args object.
         pass
-
+    if getattr(args, 'routing_compare', False):
+        return run_attention_comparison(args)
     use_existing = args.use_existing_features if args else False
     save_features_flag = args.save_features if args else False
     fast_dev_run = getattr(args, 'fast_dev_run', False)
@@ -3445,9 +3442,8 @@ def main(args=None):
     max_file_size = getattr(args, 'max_file_size', DEFAULT_MAX_FILE_SIZE)
     file_extensions = getattr(args, 'file_extensions', None)
     label_inference = getattr(args, 'label_inference', 'filename')
-    
+    expert_attention_type = str(getattr(args, 'expert_attention_type', EXPERT_ATTENTION_TYPE)).lower()
     X, y, files = None, None, None
-
     if incremental_training and incremental_data_dir:
         if incremental_raw_data_dir:
             print("[*] Extracting features from raw files (Incremental)...")
@@ -3462,9 +3458,7 @@ def main(args=None):
         X, y, files = load_incremental_dataset(incremental_data_dir, max_file_size)
         if X is None:
             print("[!] Failed to load incremental data.")
-            return
-    
-    # Standard Data Loading
+            return None
     elif use_existing and os.path.exists(FEATURES_PKL_PATH):
         print(f"[*] Loading features from {FEATURES_PKL_PATH}...")
         try:
@@ -3476,85 +3470,69 @@ def main(args=None):
         except Exception as e:
             print(f"[!] Failed to load existing features: {e}")
             print("    Falling back to feature extraction...")
-            
     if X is None:
         print(f"[*] Extracting features (this may take a while)...")
         X, y, files = load_dataset(PROCESSED_DATA_DIR, METADATA_FILE, max_file_size, fast_dev_run=fast_dev_run)
-        
         if save_features_flag:
             save_features_to_pickle(X, y, files, FEATURES_PKL_PATH)
-
     print(f"[*] Total samples: {len(X)}")
     print(f"[*] Feature dimension: {X.shape[1]}")
-    
-    # 2. Generate Routing Labels
     routing_labels = generate_routing_labels(X)
-    
-    # 3. Train Gating Model
-    # Split for Gating Model Training
     X_train_g, X_val_g, y_train_g, y_val_g = train_test_split(
         X, routing_labels, test_size=DEFAULT_TEST_SIZE, random_state=DEFAULT_RANDOM_STATE, stratify=routing_labels
     )
-    
-    # Only train gating model if NOT in incremental mode or if explicitly requested?
-    # For now, we always retrain gating model to ensure it adapts to new data distribution if any.
     train_gating_model_process(X_train_g, y_train_g, X_val_g, y_val_g)
-    
-    # 4. Train Expert Models
     print("\n[*] Training Expert Models...")
-    
-    # Split Data by Routing Label
-    # We split the entire dataset into Train/Test first to have a global evaluation set.
-    
     X_train_main, X_test_main, y_train_main, y_test_main, r_train_main, r_test_main, files_train_main, files_test_main = train_test_split(
         X, y, routing_labels, files, test_size=DEFAULT_TEST_SIZE, random_state=DEFAULT_RANDOM_STATE, stratify=y
     )
-    
-    # --- Expert Normal (Routing Label 0) ---
+    if expert_attention_type == 'none':
+        for p in [EXPERT_NORMAL_ATTENTION_PATH, EXPERT_PACKED_ATTENTION_PATH]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
     mask_normal = (r_train_main == 0)
     X_normal = X_train_main[mask_normal]
     y_normal = y_train_main[mask_normal]
     files_normal = [files_train_main[i] for i in range(len(files_train_main)) if mask_normal[i]]
-    
     if len(X_normal) > 10:
         X_t_norm, X_v_norm, y_t_norm, y_v_norm, f_t_norm, f_v_norm = train_test_split(
             X_normal, y_normal, files_normal, test_size=DEFAULT_VAL_SIZE, random_state=DEFAULT_RANDOM_STATE
         )
         print(f"[*] Expert Normal - Train: {len(X_t_norm)}, Val: {len(X_v_norm)}")
-        
         train_expert_model_with_finetuning(
             X_t_norm, y_t_norm, X_v_norm, y_v_norm, f_t_norm, f_v_norm,
-            EXPERT_NORMAL_MODEL_PATH, args, expert_name="Expert Normal"
+            EXPERT_NORMAL_MODEL_PATH, args, expert_name="Expert Normal",
+            attention_type=expert_attention_type, attention_path=EXPERT_NORMAL_ATTENTION_PATH
         )
     else:
         print("[!] Not enough samples for Expert Normal training.")
-
-    # --- Expert Packed (Routing Label 1) ---
     mask_packed = (r_train_main == 1)
     X_packed = X_train_main[mask_packed]
     y_packed = y_train_main[mask_packed]
     files_packed = [files_train_main[i] for i in range(len(files_train_main)) if mask_packed[i]]
-    
     if len(X_packed) > 10:
         X_t_pack, X_v_pack, y_t_pack, y_v_pack, f_t_pack, f_v_pack = train_test_split(
             X_packed, y_packed, files_packed, test_size=DEFAULT_VAL_SIZE, random_state=DEFAULT_RANDOM_STATE
         )
         print(f"[*] Expert Packed - Train: {len(X_t_pack)}, Val: {len(X_v_pack)}")
-        
         train_expert_model_with_finetuning(
             X_t_pack, y_t_pack, X_v_pack, y_v_pack, f_t_pack, f_v_pack,
-            EXPERT_PACKED_MODEL_PATH, args, expert_name="Expert Packed"
+            EXPERT_PACKED_MODEL_PATH, args, expert_name="Expert Packed",
+            attention_type=expert_attention_type, attention_path=EXPERT_PACKED_ATTENTION_PATH
         )
     else:
         print("[!] Not enough samples for Expert Packed training.")
-
     print("\n[*] Training pipeline completed.")
-
-    # 5. Final System Evaluation
     if len(X_test_main) > 0:
-        evaluate_routing_system(X_test_main, y_test_main, files_test_main)
-    else:
-        print("[!] No test samples available for evaluation.")
+        metrics = evaluate_routing_system(X_test_main, y_test_main, files_test_main)
+        if isinstance(metrics, dict):
+            metrics['attention_type'] = expert_attention_type
+        return metrics
+    print("[!] No test samples available for evaluation.")
+    return None
 
 if __name__ == '__main__':
     # Argument Parsing if run directly
@@ -3578,474 +3556,20 @@ if __name__ == '__main__':
     parser.add_argument('--incremental-early-stopping', type=int, default=DEFAULT_INCREMENTAL_EARLY_STOPPING)
     parser.add_argument('--max-finetune-iterations', type=int, default=DEFAULT_MAX_FINETUNE_ITERATIONS)
     parser.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE)
+    parser.add_argument('--expert-attention-type', type=str, default=EXPERT_ATTENTION_TYPE, choices=['none', 'se', 'mhsa'])
+    parser.add_argument('--expert-attention-hidden-dim', type=int, default=EXPERT_ATTENTION_HIDDEN_DIM)
+    parser.add_argument('--expert-attention-heads', type=int, default=EXPERT_ATTENTION_HEADS)
+    parser.add_argument('--expert-attention-latent-tokens', type=int, default=EXPERT_ATTENTION_LATENT_TOKENS)
+    parser.add_argument('--expert-attention-epochs', type=int, default=EXPERT_ATTENTION_EPOCHS)
+    parser.add_argument('--expert-attention-batch-size', type=int, default=EXPERT_ATTENTION_BATCH_SIZE)
+    parser.add_argument('--expert-attention-lr', type=float, default=EXPERT_ATTENTION_LEARNING_RATE)
+    parser.add_argument('--routing-compare', action='store_true')
+    parser.add_argument('--compare-attention-types', nargs='+', default=['none', 'se', 'mhsa'])
+    parser.add_argument('--baseline-fp', type=int, default=41)
+    parser.add_argument('--baseline-fn', type=int, default=687)
 
     args = parser.parse_args()
     main(args)
-''')
-
-_register_embedded("training.attention_benchmark", r'''import os
-import csv
-import json
-import time
-import random
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score
-from torch.utils.data import DataLoader, TensorDataset
-
-from config.config import (
-    FEATURES_PKL_PATH, PROCESSED_DATA_DIR, METADATA_FILE, DEFAULT_MAX_FILE_SIZE,
-    DEFAULT_TEST_SIZE, DEFAULT_VAL_SIZE, DEFAULT_RANDOM_STATE, PREDICTION_THRESHOLD,
-    GATING_INPUT_DIM, GATING_HIDDEN_DIM, GATING_OUTPUT_DIM,
-    ATTENTION_BENCHMARK_DIR, ATTENTION_BENCHMARK_WEIGHTS_DIR, ATTENTION_BENCHMARK_LOG_DIR,
-    ATTENTION_BENCHMARK_REPORT_JSON_PATH, ATTENTION_BENCHMARK_REPORT_MD_PATH
-)
-from training.data_loader import load_dataset
-from models.gating import create_gating_model
-from training.train_routing import generate_gradcam_heatmap
-
-BASELINE_CONFUSION = {
-    "fp": 41,
-    "fn": 687,
-    "tp": 3958,
-    "tn": 28712
-}
-
-DEFAULT_ATTENTION_LIST = [
-    "none",
-    "self_attention",
-    "channel_attention",
-    "spatial_attention",
-    "cbam",
-    "non_local",
-    "transformer_encoder"
-]
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-def _load_features(max_file_size, fast_dev_run):
-    if os.path.exists(FEATURES_PKL_PATH):
-        try:
-            import pandas as pd
-            df = pd.read_pickle(FEATURES_PKL_PATH)
-            x = df.drop(["filename", "label"], axis=1).values.astype(np.float32)
-            y = df["label"].astype(int).values
-            files = df["filename"].tolist()
-            return x, y, files
-        except Exception:
-            pass
-    x, y, files = load_dataset(PROCESSED_DATA_DIR, METADATA_FILE, max_file_size=max_file_size, fast_dev_run=fast_dev_run)
-    return x.astype(np.float32), y.astype(np.int64), files
-
-def _stratified_take(x, y, files, max_samples, seed):
-    if max_samples <= 0 or len(x) <= max_samples:
-        return x, y, files
-    rng = np.random.RandomState(seed)
-    idx0 = np.where(y == 0)[0]
-    idx1 = np.where(y == 1)[0]
-    n1 = min(len(idx1), max_samples // 2)
-    n0 = min(len(idx0), max_samples - n1)
-    chosen0 = rng.choice(idx0, size=n0, replace=False) if n0 > 0 else np.array([], dtype=np.int64)
-    chosen1 = rng.choice(idx1, size=n1, replace=False) if n1 > 0 else np.array([], dtype=np.int64)
-    chosen = np.concatenate([chosen0, chosen1])
-    rng.shuffle(chosen)
-    return x[chosen], y[chosen], [files[i] for i in chosen]
-
-def _split_data(x, y, files, seed):
-    x_temp, x_test, y_temp, y_test, f_temp, f_test = train_test_split(
-        x, y, files, test_size=DEFAULT_TEST_SIZE, random_state=seed, stratify=y if len(np.unique(y)) > 1 else None
-    )
-    x_train, x_val, y_train, y_val, f_train, f_val = train_test_split(
-        x_temp, y_temp, f_temp, test_size=DEFAULT_VAL_SIZE, random_state=seed, stratify=y_temp if len(np.unique(y_temp)) > 1 else None
-    )
-    return x_train, y_train, f_train, x_val, y_val, f_val, x_test, y_test, f_test
-
-def _build_loader(x, y, batch_size, shuffle):
-    dataset = TensorDataset(torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.long))
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-
-def _evaluate(model, loader, device, threshold):
-    model.eval()
-    probs = []
-    ys = []
-    with torch.no_grad():
-        for xb, yb in loader:
-            xb = xb.to(device)
-            logits = model(xb)
-            logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0)
-            logits = torch.clamp(logits, min=-20.0, max=20.0)
-            p = torch.softmax(logits, dim=1)[:, 1]
-            p = torch.nan_to_num(p, nan=0.5, posinf=1.0, neginf=0.0).detach().cpu().numpy()
-            probs.append(p)
-            ys.append(yb.numpy())
-    if not probs:
-        return {}
-    probs = np.concatenate(probs)
-    ys = np.concatenate(ys)
-    finite_mask = np.isfinite(probs)
-    if not np.all(finite_mask):
-        probs = probs[finite_mask]
-        ys = ys[finite_mask]
-    if probs.size == 0:
-        return {
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1": 0.0,
-            "auc": 0.0,
-            "tp": 0,
-            "tn": 0,
-            "fp": 0,
-            "fn": 0,
-            "probs": np.zeros(0, dtype=np.float32),
-            "labels": np.zeros(0, dtype=np.int64)
-        }
-    probs = np.clip(probs, 0.0, 1.0)
-    preds = (probs > threshold).astype(int)
-    cm = confusion_matrix(ys, preds, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel()
-    try:
-        auc = roc_auc_score(ys, probs) if len(np.unique(ys)) > 1 else 0.0
-    except Exception:
-        auc = 0.0
-    return {
-        "precision": float(precision_score(ys, preds, zero_division=0)),
-        "recall": float(recall_score(ys, preds, zero_division=0)),
-        "f1": float(f1_score(ys, preds, zero_division=0)),
-        "auc": float(auc),
-        "tp": int(tp),
-        "tn": int(tn),
-        "fp": int(fp),
-        "fn": int(fn),
-        "probs": probs,
-        "labels": ys
-    }
-
-def _measure_latency(model, x_ref, device, sample_count=512, warmup=20):
-    n = min(sample_count, len(x_ref))
-    if n <= 0:
-        return 0.0
-    x = torch.tensor(x_ref[:n], dtype=torch.float32).to(device)
-    model.eval()
-    with torch.no_grad():
-        for _ in range(min(warmup, n)):
-            _ = model(x[:1])
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        _ = model(x)
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        elapsed = time.perf_counter() - t0
-    return float(elapsed * 1000.0 / max(1, n))
-
-def _measure_memory_mb(model, device):
-    param_mb = float(sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024))
-    if device.type == "cuda":
-        return float(torch.cuda.max_memory_allocated(device) / (1024 * 1024))
-    return param_mb
-
-def _normalize(value, min_v, max_v, inverse=False):
-    if max_v <= min_v:
-        return 1.0
-    score = (value - min_v) / (max_v - min_v)
-    if inverse:
-        score = 1.0 - score
-    return float(np.clip(score, 0.0, 1.0))
-
-def _pareto_front(rows):
-    front = []
-    for i, a in enumerate(rows):
-        dominated = False
-        for j, b in enumerate(rows):
-            if i == j:
-                continue
-            better_or_equal = (
-                b["f1"] >= a["f1"] and
-                b["auc"] >= a["auc"] and
-                b["latency_ms"] <= a["latency_ms"] and
-                b["memory_mb"] <= a["memory_mb"]
-            )
-            strictly_better = (
-                b["f1"] > a["f1"] or
-                b["auc"] > a["auc"] or
-                b["latency_ms"] < a["latency_ms"] or
-                b["memory_mb"] < a["memory_mb"]
-            )
-            if better_or_equal and strictly_better:
-                dominated = True
-                break
-        if not dominated:
-            front.append(a["attention"])
-    return front
-
-def _write_markdown_report(report, path):
-    lines = []
-    lines.append("# 注意力机制对比实验报告")
-    lines.append("")
-    lines.append("## 基准混淆矩阵")
-    lines.append("")
-    b = report["baseline_confusion"]
-    lines.append(f"- FP: {b['fp']}")
-    lines.append(f"- FN: {b['fn']}")
-    lines.append(f"- TP: {b['tp']}")
-    lines.append(f"- TN: {b['tn']}")
-    lines.append("")
-    lines.append("## 结果总表")
-    lines.append("")
-    lines.append("| 注意力 | Precision | Recall | F1 | AUC | Latency(ms) | Memory(MB) | TP | TN | FP | FN | Score | Pareto | 延迟达标 | 跳过后续训练 | 跳过阶段 |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|")
-    for row in report["results"]:
-        lines.append(
-            f"| {row['attention']} | {row['precision']:.6f} | {row['recall']:.6f} | {row['f1']:.6f} | {row['auc']:.6f} | {row['latency_ms']:.6f} | {row['memory_mb']:.6f} | {row['tp']} | {row['tn']} | {row['fp']} | {row['fn']} | {row['weighted_score']:.6f} | {str(row['is_pareto'])} | {str(row['meets_latency'])} | {str(row.get('skipped_by_latency', False))} | {row.get('latency_guard_stage', '')} |"
-        )
-    lines.append("")
-    lines.append("## 最优结论")
-    lines.append("")
-    lines.append(f"- 加权最优: {report['best_by_score']}")
-    lines.append(f"- 延迟约束最优(<= {report['latency_limit_ms']} ms): {report['best_under_latency']}")
-    lines.append(f"- Pareto前沿: {', '.join(report['pareto_front'])}")
-    lines.append(f"- 延迟约束Pareto: {', '.join(report['pareto_front_under_latency'])}")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
-def run(args):
-    set_seed(args.seed)
-    os.makedirs(ATTENTION_BENCHMARK_DIR, exist_ok=True)
-    os.makedirs(ATTENTION_BENCHMARK_WEIGHTS_DIR, exist_ok=True)
-    os.makedirs(ATTENTION_BENCHMARK_LOG_DIR, exist_ok=True)
-    x, y, files = _load_features(args.max_file_size, args.fast_dev_run)
-    x, y, files = _stratified_take(x, y, files, args.max_samples, args.seed)
-    x_train, y_train, _, x_val, y_val, _, x_test, y_test, _ = _split_data(x, y, files, args.seed)
-    if x.shape[1] != GATING_INPUT_DIM:
-        raise ValueError(f"输入特征维度与门控配置不一致: data={x.shape[1]}, config={GATING_INPUT_DIM}")
-    train_loader = _build_loader(x_train, y_train, args.batch_size, True)
-    val_loader = _build_loader(x_val, y_val, args.batch_size, False)
-    test_loader = _build_loader(x_test, y_test, args.batch_size, False)
-    attention_list = [a.strip() for a in args.attentions.split(",") if a.strip()] if args.attentions else list(DEFAULT_ATTENTION_LIST)
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.force_cpu else "cpu")
-    threshold = args.threshold if args.threshold > 0 else PREDICTION_THRESHOLD
-    latency_limit_ms = float(max(0.001, args.max_latency_ms))
-    rows = []
-    for attention in attention_list:
-        model_type = "mlp" if attention == "none" else attention
-        model = create_gating_model(model_type, GATING_INPUT_DIM, GATING_HIDDEN_DIM, GATING_OUTPUT_DIM).to(device)
-        precheck_latency_ms = _measure_latency(model, x_val, device, sample_count=min(64, max(1, args.latency_samples)))
-        if precheck_latency_ms > latency_limit_ms:
-            row = {
-                "attention": attention,
-                "precision": 0.0,
-                "recall": 0.0,
-                "f1": 0.0,
-                "auc": 0.0,
-                "latency_ms": float(precheck_latency_ms),
-                "memory_mb": float(_measure_memory_mb(model, device)),
-                "tp": 0,
-                "tn": 0,
-                "fp": 0,
-                "fn": 0,
-                "delta_fp_vs_baseline": -BASELINE_CONFUSION["fp"],
-                "delta_fn_vs_baseline": -BASELINE_CONFUSION["fn"],
-                "weights_path": "",
-                "train_log_path": "",
-                "gradcam_path": "",
-                "meets_latency": False,
-                "skipped_by_latency": True,
-                "latency_guard_stage": "pre_train",
-                "skip_reason": f"precheck_latency_ms({precheck_latency_ms:.6f}) > latency_limit_ms({latency_limit_ms:.6f})"
-            }
-            row["weighted_score"] = 0.0
-            row["is_pareto"] = False
-            rows.append(row)
-            continue
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.epochs))
-        best_state = None
-        best_f1 = -1.0
-        bad_epochs = 0
-        skipped_by_latency = False
-        latency_guard_stage = ""
-        skip_reason = ""
-        log_path = os.path.join(ATTENTION_BENCHMARK_LOG_DIR, f"{attention}.jsonl")
-        with open(log_path, "w", encoding="utf-8") as lf:
-            for epoch in range(1, args.epochs + 1):
-                model.train()
-                train_loss = 0.0
-                for xb, yb in train_loader:
-                    xb = xb.to(device)
-                    yb = yb.to(device)
-                    optimizer.zero_grad()
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
-                    loss.backward()
-                    optimizer.step()
-                    train_loss += float(loss.item())
-                scheduler.step()
-                val_metrics = _evaluate(model, val_loader, device, threshold)
-                epoch_log = {
-                    "epoch": epoch,
-                    "train_loss": train_loss / max(1, len(train_loader)),
-                    "val_precision": val_metrics.get("precision", 0.0),
-                    "val_recall": val_metrics.get("recall", 0.0),
-                    "val_f1": val_metrics.get("f1", 0.0),
-                    "val_auc": val_metrics.get("auc", 0.0),
-                    "lr": optimizer.param_groups[0]["lr"]
-                }
-                probe_latency_ms = _measure_latency(model, x_val, device, sample_count=min(64, max(1, args.latency_samples)))
-                epoch_log["probe_latency_ms"] = float(probe_latency_ms)
-                if probe_latency_ms > latency_limit_ms:
-                    skipped_by_latency = True
-                    latency_guard_stage = "epoch_guard"
-                    skip_reason = f"epoch={epoch}, probe_latency_ms({probe_latency_ms:.6f}) > latency_limit_ms({latency_limit_ms:.6f})"
-                    epoch_log["latency_guard_triggered"] = True
-                    lf.write(json.dumps(epoch_log, ensure_ascii=False) + "\n")
-                    break
-                lf.write(json.dumps(epoch_log, ensure_ascii=False) + "\n")
-                cur_f1 = val_metrics.get("f1", 0.0)
-                if cur_f1 > best_f1:
-                    best_f1 = cur_f1
-                    bad_epochs = 0
-                    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-                else:
-                    bad_epochs += 1
-                    if bad_epochs >= args.early_stopping_patience:
-                        break
-        if best_state is not None:
-            model.load_state_dict(best_state)
-        weight_path = os.path.join(ATTENTION_BENCHMARK_WEIGHTS_DIR, f"{attention}.pth")
-        torch.save(model.state_dict(), weight_path)
-        test_metrics = _evaluate(model, test_loader, device, threshold)
-        latency_ms = _measure_latency(model, x_test, device, sample_count=args.latency_samples)
-        if device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats(device)
-            _ = _measure_latency(model, x_test, device, sample_count=min(args.latency_samples, len(x_test)))
-        memory_mb = _measure_memory_mb(model, device)
-        gradcam_path = os.path.join(ATTENTION_BENCHMARK_DIR, f"gradcam_{attention}.png")
-        try:
-            generate_gradcam_heatmap(model.cpu(), x_val[:min(len(x_val), 256)], gradcam_path)
-        except Exception:
-            gradcam_path = ""
-        delta_fp = int(test_metrics["fp"] - BASELINE_CONFUSION["fp"])
-        delta_fn = int(test_metrics["fn"] - BASELINE_CONFUSION["fn"])
-        row = {
-            "attention": attention,
-            "precision": float(test_metrics["precision"]),
-            "recall": float(test_metrics["recall"]),
-            "f1": float(test_metrics["f1"]),
-            "auc": float(test_metrics["auc"]),
-            "latency_ms": float(latency_ms),
-            "memory_mb": float(memory_mb),
-            "tp": int(test_metrics["tp"]),
-            "tn": int(test_metrics["tn"]),
-            "fp": int(test_metrics["fp"]),
-            "fn": int(test_metrics["fn"]),
-            "delta_fp_vs_baseline": delta_fp,
-            "delta_fn_vs_baseline": delta_fn,
-            "weights_path": weight_path,
-            "train_log_path": log_path,
-            "gradcam_path": gradcam_path
-        }
-        row["meets_latency"] = bool(row["latency_ms"] <= latency_limit_ms)
-        row["skipped_by_latency"] = bool(skipped_by_latency)
-        row["latency_guard_stage"] = latency_guard_stage
-        row["skip_reason"] = skip_reason
-        rows.append(row)
-    precision_values = [r["precision"] for r in rows]
-    recall_values = [r["recall"] for r in rows]
-    f1_values = [r["f1"] for r in rows]
-    auc_values = [r["auc"] for r in rows]
-    latency_values = [r["latency_ms"] for r in rows]
-    memory_values = [r["memory_mb"] for r in rows]
-    for r in rows:
-        if r.get("skipped_by_latency", False):
-            r["weighted_score"] = 0.0
-            continue
-        s_precision = _normalize(r["precision"], min(precision_values), max(precision_values))
-        s_recall = _normalize(r["recall"], min(recall_values), max(recall_values))
-        s_f1 = _normalize(r["f1"], min(f1_values), max(f1_values))
-        s_auc = _normalize(r["auc"], min(auc_values), max(auc_values))
-        s_latency = _normalize(r["latency_ms"], min(latency_values), max(latency_values), inverse=True)
-        s_memory = _normalize(r["memory_mb"], min(memory_values), max(memory_values), inverse=True)
-        weighted = (
-            args.score_w_precision * s_precision +
-            args.score_w_recall * s_recall +
-            args.score_w_f1 * s_f1 +
-            args.score_w_auc * s_auc +
-            args.score_w_latency * s_latency +
-            args.score_w_memory * s_memory
-        )
-        r["weighted_score"] = float(weighted)
-    pareto = _pareto_front(rows)
-    for r in rows:
-        r["is_pareto"] = r["attention"] in pareto
-    rows = sorted(rows, key=lambda z: z["weighted_score"], reverse=True)
-    best_by_score = rows[0]["attention"] if rows else ""
-    rows_under_latency = [r for r in rows if r.get("meets_latency")]
-    best_under_latency = rows_under_latency[0]["attention"] if rows_under_latency else ""
-    pareto_under_latency = _pareto_front(rows_under_latency) if rows_under_latency else []
-    report = {
-        "seed": args.seed,
-        "device": str(device),
-        "threshold": threshold,
-        "dataset": {
-            "total": int(len(x)),
-            "train": int(len(x_train)),
-            "val": int(len(x_val)),
-            "test": int(len(x_test)),
-            "feature_dim": int(x.shape[1])
-        },
-        "baseline_confusion": BASELINE_CONFUSION,
-        "uniform_protocol": {
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-            "optimizer": "AdamW",
-            "lr": args.lr,
-            "weight_decay": args.weight_decay,
-            "scheduler": "CosineAnnealingLR",
-            "early_stopping_patience": args.early_stopping_patience,
-            "loss": "CrossEntropyLoss"
-        },
-        "latency_limit_ms": latency_limit_ms,
-        "pareto_front": pareto,
-        "pareto_front_under_latency": pareto_under_latency,
-        "best_by_score": best_by_score,
-        "best_under_latency": best_under_latency,
-        "results": rows
-    }
-    os.makedirs(os.path.dirname(ATTENTION_BENCHMARK_REPORT_JSON_PATH), exist_ok=True)
-    with open(ATTENTION_BENCHMARK_REPORT_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-    _write_markdown_report(report, ATTENTION_BENCHMARK_REPORT_MD_PATH)
-    csv_path = os.path.join(ATTENTION_BENCHMARK_DIR, "summary.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "attention", "precision", "recall", "f1", "auc", "latency_ms", "memory_mb",
-            "tp", "tn", "fp", "fn", "delta_fp_vs_baseline", "delta_fn_vs_baseline",
-            "weighted_score", "is_pareto", "meets_latency", "skipped_by_latency", "latency_guard_stage", "skip_reason",
-            "weights_path", "train_log_path", "gradcam_path"
-        ])
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: row.get(k, "") for k in writer.fieldnames})
-    print(json.dumps({
-        "report_json": ATTENTION_BENCHMARK_REPORT_JSON_PATH,
-        "report_md": ATTENTION_BENCHMARK_REPORT_MD_PATH,
-        "summary_csv": csv_path,
-        "best_by_score": best_by_score,
-        "best_under_latency": best_under_latency,
-        "pareto_front": pareto,
-        "pareto_front_under_latency": pareto_under_latency
-    }, ensure_ascii=False, indent=2))
-    return report
 ''')
 
 _register_embedded("validation", r'''pass
@@ -8171,7 +7695,7 @@ from config.config import (
     MODEL_PATH, FAMILY_CLASSIFIER_PATH, FEATURES_PKL_PATH, PROCESSED_DATA_DIR, METADATA_FILE,
     BENIGN_SAMPLES_DIR, MALICIOUS_SAMPLES_DIR,
     DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS,
-    DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS, DEFAULT_RANDOM_STATE,
+    DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS,
     DEFAULT_MIN_CLUSTER_SIZE, DEFAULT_MIN_SAMPLES, DEFAULT_MIN_FAMILY_SIZE,
     DEFAULT_TREAT_NOISE_AS_FAMILY,
     SCAN_CACHE_PATH, SCAN_OUTPUT_DIR, HDBSCAN_SAVE_DIR,
@@ -8187,7 +7711,7 @@ from config.config import (
     HELP_RECURSIVE, HELP_OUTPUT_PATH,
     HELP_AUTOML_METHOD, HELP_AUTOML_TRIALS, HELP_AUTOML_CV, HELP_AUTOML_METRIC, HELP_AUTOML_FAST_DEV_RUN, HELP_SKIP_TUNING,
     AUTOML_METHOD_DEFAULT, AUTOML_TRIALS_DEFAULT, AUTOML_CV_FOLDS_DEFAULT, AUTOML_METRIC_DEFAULT,
-    DETECTED_MALICIOUS_PATHS_REPORT_PATH, PREDICTION_THRESHOLD
+    DETECTED_MALICIOUS_PATHS_REPORT_PATH
 )
 from utils.logging_utils import configure_logging, get_logger, redirect_print_to_logger, set_log_level
 
@@ -8465,6 +7989,17 @@ def main():
     sp_train_routing.add_argument('--incremental-early-stopping', type=int, default=DEFAULT_INCREMENTAL_EARLY_STOPPING, help=HELP_INCREMENTAL_EARLY_STOPPING)
     sp_train_routing.add_argument('--max-finetune-iterations', type=int, default=DEFAULT_MAX_FINETUNE_ITERATIONS, help=HELP_MAX_FINETUNE_ITERATIONS)
     sp_train_routing.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
+    sp_train_routing.add_argument('--expert-attention-type', type=str, default='none', choices=['none', 'se', 'mhsa'])
+    sp_train_routing.add_argument('--expert-attention-hidden-dim', type=int, default=256)
+    sp_train_routing.add_argument('--expert-attention-heads', type=int, default=4)
+    sp_train_routing.add_argument('--expert-attention-latent-tokens', type=int, default=32)
+    sp_train_routing.add_argument('--expert-attention-epochs', type=int, default=10)
+    sp_train_routing.add_argument('--expert-attention-batch-size', type=int, default=256)
+    sp_train_routing.add_argument('--expert-attention-lr', type=float, default=0.001)
+    sp_train_routing.add_argument('--routing-compare', action='store_true')
+    sp_train_routing.add_argument('--compare-attention-types', nargs='+', default=['none', 'se', 'mhsa'])
+    sp_train_routing.add_argument('--baseline-fp', type=int, default=41)
+    sp_train_routing.add_argument('--baseline-fn', type=int, default=687)
     
     sp_train_all = subs.add_parser('train-all', help='一键执行特征提取、模型训练、评估与聚类')
     sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
@@ -8483,28 +8018,6 @@ def main():
     sp_autotune.add_argument('--use-existing-features', action='store_true', help=HELP_USE_EXISTING_FEATURES)
     sp_autotune.add_argument('--fast-dev-run', action='store_true', help=HELP_AUTOML_FAST_DEV_RUN)
     sp_autotune.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
-
-    sp_attention_benchmark = subs.add_parser('benchmark-attention', help='统一注意力机制对比实验')
-    sp_attention_benchmark.add_argument('--attentions', type=str, default='none,self_attention,channel_attention,spatial_attention,cbam,non_local,transformer_encoder')
-    sp_attention_benchmark.add_argument('--epochs', type=int, default=12)
-    sp_attention_benchmark.add_argument('--batch-size', type=int, default=128)
-    sp_attention_benchmark.add_argument('--lr', type=float, default=0.001)
-    sp_attention_benchmark.add_argument('--weight-decay', type=float, default=1e-4)
-    sp_attention_benchmark.add_argument('--early-stopping-patience', type=int, default=3)
-    sp_attention_benchmark.add_argument('--threshold', type=float, default=PREDICTION_THRESHOLD)
-    sp_attention_benchmark.add_argument('--max-latency-ms', type=float, default=500.0)
-    sp_attention_benchmark.add_argument('--latency-samples', type=int, default=512)
-    sp_attention_benchmark.add_argument('--max-samples', type=int, default=40000)
-    sp_attention_benchmark.add_argument('--seed', type=int, default=DEFAULT_RANDOM_STATE)
-    sp_attention_benchmark.add_argument('--fast-dev-run', action='store_true')
-    sp_attention_benchmark.add_argument('--force-cpu', action='store_true')
-    sp_attention_benchmark.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE)
-    sp_attention_benchmark.add_argument('--score-w-precision', type=float, default=0.15)
-    sp_attention_benchmark.add_argument('--score-w-recall', type=float, default=0.15)
-    sp_attention_benchmark.add_argument('--score-w-f1', type=float, default=0.30)
-    sp_attention_benchmark.add_argument('--score-w-auc', type=float, default=0.20)
-    sp_attention_benchmark.add_argument('--score-w-latency', type=float, default=0.10)
-    sp_attention_benchmark.add_argument('--score-w-memory', type=float, default=0.10)
 
     args = parser.parse_args()
 
@@ -8718,14 +8231,6 @@ def main():
             logger.info(f"AutoML完成: {result}")
         except Exception as e:
             logger.error(f'AutoML失败: {e}')
-            raise
-    elif args.command == 'benchmark-attention':
-        from training import attention_benchmark
-        try:
-            result = attention_benchmark.run(args)
-            logger.info(f"注意力实验完成: 最优={result.get('best_by_score', '')}")
-        except Exception as e:
-            logger.error(f'注意力实验失败: {e}')
             raise
 
 if __name__ == '__main__':
