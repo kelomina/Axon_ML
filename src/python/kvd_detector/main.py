@@ -316,7 +316,7 @@ COLLECT_MAX_FILE_SIZE = SIZE_NORM_MAX
 
 # 评估与训练细节参数：控制可视化与学习率策略
 # PREDICTION_THRESHOLD：恶意预测阈值；用途：判定样本为恶意的概率下限；推荐值：0.95-0.99
-PREDICTION_THRESHOLD = 0.98
+PREDICTION_THRESHOLD = 0.6
 OHEM_ENABLED = True
 OHEM_RATIO = 0.2
 OHEM_WEIGHT_FACTOR = 3.0
@@ -340,7 +340,7 @@ KMEANS_N_INIT = 1
 # EVAL_HIST_BINS：评估直方图分箱；用途：概率分布可视化精度；推荐值：50（30-100）
 EVAL_HIST_BINS = 100
 # EVAL_TOP_FEATURE_COUNT：Top 特征数量；用途：训练后输出前 N 个重要特征；推荐值：20（10-50）
-EVAL_TOP_FEATURE_COUNT = 50
+EVAL_TOP_FEATURE_COUNT = 100
 # EVAL_FONT_FAMILY：评估图中文字体；用途：确保中文标签正常显示；推荐值：['SimHei','Microsoft YaHei']
 EVAL_FONT_FAMILY = ['SimHei', 'Microsoft YaHei']
 # DEFAULT_TEST_SIZE：测试集比例；用途：数据集划分的测试集占比；推荐值：0.2
@@ -356,7 +356,7 @@ PACKER_SECTION_KEYWORDS = ['upx', 'mpress', 'aspack', 'themida', 'petite', 'peco
 # SYSTEM_DLLS：系统 DLL 集合；用途：统计导入系统 DLL 的数量/占比；推荐值：常见基础系统库集合
 SYSTEM_DLLS = {'kernel32', 'user32', 'gdi32', 'advapi32', 'shell32', 'ole32', 'comctl32'}
 # ENTROPY_HIGH_THRESHOLD：高熵阈值；用途：计算高熵块占比；推荐值：0.8（0.7-0.9）
-ENTROPY_HIGH_THRESHOLD = 0.8
+ENTROPY_HIGH_THRESHOLD = 0.7
 # ENTROPY_LOW_THRESHOLD：低熵阈值；用途：计算低熵块占比；推荐值：0.2（0.1-0.3）
 ENTROPY_LOW_THRESHOLD = 0.2
 # LARGE_TRAILING_DATA_SIZE：大尾部数据大小阈值（字节）；用途：识别异常附加数据；推荐值：1MB（512KB-4MB）
@@ -376,7 +376,7 @@ FAMILY_THRESHOLD_PERCENTILE = 90
 # FAMILY_THRESHOLD_MULTIPLIER：家族阈值放大倍数；用途：放宽/收紧家族判定；推荐值：1.2（1.0-1.5）
 FAMILY_THRESHOLD_MULTIPLIER = 1.0
 # WARMUP_ROUNDS：学习率暖启动轮数；用途：前期小步长稳定训练；推荐值：100（50-200）
-WARMUP_ROUNDS = 200
+WARMUP_ROUNDS = 100
 # WARMUP_START_LR：暖启动起始学习率；用途：初始学习率；推荐值：0.001（0.0005-0.005）
 WARMUP_START_LR = 0.001
 # WARMUP_TARGET_LR：暖启动目标学习率；用途：结束时学习率
@@ -440,7 +440,7 @@ FEATURE_GATING_K_STEP = 50
 
 # AutoML 配置
 # AUTOML_ENABLED：启用 AutoML；用途：开启自动超参数优化
-AUTOML_ENABLED = True
+AUTOML_ENABLED = False
 # AUTOML_METHOD_DEFAULT：默认调优方法；用途：'optuna' 或 'hyperopt'
 AUTOML_METHOD_DEFAULT = 'optuna'
 # AUTOML_TRIALS_DEFAULT：默认试验次数；用途：超参数搜索的迭代次数
@@ -4486,24 +4486,90 @@ def _feature_index_from_name(name):
     return int(m.group(1))
 
 
-def _collect_zero_importance_features():
-    report_patterns = ['hard_samples_*.json', 'false_positives_*.json', 'false_negitives_*.json']
+def _load_analysis_topk_feature_indices():
+    analysis_dir = Path(RESOURCES_DIR) / 'eval' / 'hard_samples_analysis'
+    if not analysis_dir.exists():
+        return set()
+    csv_files = sorted(analysis_dir.glob('topk_misclassification_features*.csv'), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not csv_files:
+        return set()
+    try:
+        top_df = pd.read_csv(csv_files[0])
+    except Exception:
+        return set()
+    protected = set()
+    for _, row in top_df.iterrows():
+        idx = _feature_index_from_name(row.get('feature', ''))
+        if idx is None:
+            try:
+                idx = int(row.get('feature_id'))
+            except Exception:
+                idx = None
+        if idx is not None and idx >= 0:
+            protected.add(int(idx))
+    return protected
+
+
+def _collect_low_importance_features():
+    report_defs = [
+        ('hard_samples', 'hard_samples_*.json'),
+        ('false_positives', 'false_positives_*.json'),
+        ('false_negatives', 'false_negitives_*.json'),
+    ]
+    sum_abs_importance = {}
     max_abs_importance = {}
-    raw_values = {}
-    for pattern in report_patterns:
+    sample_counts = {}
+    group_sum = {name: {} for name, _ in report_defs}
+    group_counts = {name: 0 for name, _ in report_defs}
+    for group_name, pattern in report_defs:
         report_path = _latest_sample_report(pattern)
-        for sample in _load_samples(report_path):
+        samples = _load_samples(report_path)
+        group_counts[group_name] = int(len(samples))
+        for sample in samples:
             fmap = sample.get('feature_importance', {}) or {}
             for key, value in fmap.items():
                 idx = _feature_index_from_name(key)
                 if idx is None:
                     continue
-                val = float(value)
-                prev = max_abs_importance.get(idx, 0.0)
-                max_abs_importance[idx] = max(prev, abs(val))
-                raw_values[idx] = val
-    zero_indices = sorted([idx for idx, v in max_abs_importance.items() if v <= 1e-12])
-    return zero_indices, raw_values
+                abs_val = abs(float(value))
+                sum_abs_importance[idx] = float(sum_abs_importance.get(idx, 0.0) + abs_val)
+                sample_counts[idx] = int(sample_counts.get(idx, 0) + 1)
+                max_abs_importance[idx] = float(max(max_abs_importance.get(idx, 0.0), abs_val))
+                group_sum[group_name][idx] = float(group_sum[group_name].get(idx, 0.0) + abs_val)
+    if not sample_counts:
+        return [], {}, {}
+    mean_abs_importance = {
+        idx: float(sum_abs_importance.get(idx, 0.0) / max(1, sample_counts.get(idx, 0)))
+        for idx in sample_counts.keys()
+    }
+    feature_indices = sorted(sample_counts.keys())
+    span_by_feature = {}
+    for idx in feature_indices:
+        group_means = []
+        for group_name, _ in report_defs:
+            g_count = max(1, int(group_counts.get(group_name, 0)))
+            g_mean = float(group_sum[group_name].get(idx, 0.0) / max(1, g_count))
+            group_means.append(g_mean)
+        span_by_feature[idx] = float(max(group_means) - min(group_means)) if group_means else 0.0
+    mean_values = np.asarray([mean_abs_importance[idx] for idx in feature_indices], dtype=np.float64)
+    span_values = np.asarray([span_by_feature[idx] for idx in feature_indices], dtype=np.float64)
+    max_values = np.asarray([max_abs_importance.get(idx, 0.0) for idx in feature_indices], dtype=np.float64)
+    q_mean = float(np.quantile(mean_values, 0.2)) if mean_values.size else 0.0
+    q_span = float(np.quantile(span_values, 0.2)) if span_values.size else 0.0
+    q_max = float(np.quantile(max_values, 0.25)) if max_values.size else 0.0
+    low_importance_indices = sorted([
+        idx
+        for idx in feature_indices
+        if mean_abs_importance.get(idx, 0.0) <= q_mean + 1e-15
+        and span_by_feature.get(idx, 0.0) <= q_span + 1e-15
+        and max_abs_importance.get(idx, 0.0) <= q_max + 1e-15
+    ])
+    stat = {
+        'mean_quantile_20': q_mean,
+        'span_quantile_20': q_span,
+        'max_quantile_25': q_max,
+    }
+    return low_importance_indices, mean_abs_importance, stat
 
 
 def _make_feature_columns(n_features):
@@ -4715,9 +4781,17 @@ def main(args):
     n_features_in = int(X.shape[1])
     if feature_columns is None:
         feature_columns = _make_feature_columns(n_features_in)
-    zero_indices, zero_importance_map = _collect_zero_importance_features()
+    low_importance_indices, feature_importance_map, feature_select_stat = _collect_low_importance_features()
+    analysis_topk_indices = _load_analysis_topk_feature_indices()
     protected_indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 323, 412}
-    removed_indices = sorted([idx for idx in zero_indices if 0 <= idx < n_features_in and idx not in protected_indices])
+    protected_indices = protected_indices.union(analysis_topk_indices)
+    candidate_indices = [idx for idx in low_importance_indices if 0 <= idx < n_features_in and idx not in protected_indices]
+    max_remove_count = int(max(0, np.floor(float(n_features_in) * 0.2)))
+    if max_remove_count > 0 and len(candidate_indices) > max_remove_count:
+        candidate_indices = sorted(candidate_indices, key=lambda idx: float(feature_importance_map.get(int(idx), 0.0)))
+        removed_indices = sorted(candidate_indices[:max_remove_count])
+    else:
+        removed_indices = sorted(candidate_indices)
     removed_set = set(removed_indices)
     selected_indices = [idx for idx in range(n_features_in) if idx not in removed_set]
     if not selected_indices:
@@ -4726,8 +4800,9 @@ def main(args):
     if len(selected_indices) < n_features_in:
         X = X[:, selected_indices]
         feature_columns = [feature_columns[idx] for idx in selected_indices]
-        print(f"[*] 已根据困难样本重要度剔除特征: {len(removed_indices)} 个，保留 {len(selected_indices)} 个")
-    _write_feature_selector_reports(len(files), n_features_in, selected_indices, removed_indices, zero_importance_map)
+        print(f"[*] 已根据误判与假阴性重要度剔除特征: {len(removed_indices)} 个，保留 {len(selected_indices)} 个")
+        print(f"[*] 特征筛选统计: {feature_select_stat}")
+    _write_feature_selector_reports(len(files), n_features_in, selected_indices, removed_indices, feature_importance_map)
     save_features_to_pickle(X, y, files, FEATURES_PKL_PATH, feature_names=feature_columns)
 
     if len(X) > 10:
@@ -4915,68 +4990,69 @@ def main(args):
 
     save_model(model, MODEL_PATH)
 
-    from config.config import EVAL_TOP_FEATURE_COUNT
-    print(f"\n[*] Top {EVAL_TOP_FEATURE_COUNT} important features:")
-    feature_importance = model.feature_importance(importance_type='gain')
-    indices_sorted = np.argsort(feature_importance)[::-1]
-    def get_feature_semantics(index):
-        n_stat = 49
-        if index < n_stat:
-            if index == 0:
-                return '字节均值'
-            elif index == 1:
-                return '字节标准差'
-            elif index == 2:
-                return '字节最小值'
-            elif index == 3:
-                return '字节最大值'
-            elif index == 4:
-                return '字节中位数'
-            elif index == 5:
-                return '字节25分位'
-            elif index == 6:
-                return '字节75分位'
-            elif index == 7:
-                return '零字节计数'
-            elif index == 8:
-                return '0xFF字节计数'
-            elif index == 9:
-                return '0x90字节计数'
-            elif index == 10:
-                return '可打印字节计数'
-            elif index == 11:
-                return '全局熵'
-            elif 12 <= index <= 20:
-                pos = (index - 12) // 3
-                mod = (index - 12) % 3
-                seg = ['前段','中段','后段'][pos]
-                name = ['均值','标准差','熵'][mod]
-                return seg + name
-            elif 21 <= index <= 30:
-                return f'分块均值_{index-21}'
-            elif 31 <= index <= 40:
-                return f'分块标准差_{index-31}'
-            elif 41 <= index <= 44:
-                return ['分块均值差绝对均值','分块均值差标准差','分块均值差最大值','分块均值差最小值'][index-41]
-            elif 45 <= index <= 48:
-                return ['分块标准差差绝对均值','分块标准差差标准差','分块标准差差最大值','分块标准差差最小值'][index-45]
-            else:
-                return '统计特征'
-        j = index - n_stat
-        if j < 256:
-            if j < 128:
-                return '轻量哈希位:导入DLL'
-            elif j < 224:
-                return '轻量哈希位:导入API'
-            else:
-                return '轻量哈希位:节名'
-        k = j - 256
-        if k < len(PE_FEATURE_ORDER):
-            return PE_FEATURE_ORDER[k]
-        return 'PE特征'
-    for rank, idx in enumerate(indices_sorted[:EVAL_TOP_FEATURE_COUNT], 1):
-        semantics = get_feature_semantics(idx)
-        print(f"    {rank:2d}. feature_{idx}: {feature_importance[idx]:.2f} ({semantics})")
+    stat_feature_names = [
+        'byte_mean', 'byte_std', 'byte_min', 'byte_max', 'byte_median', 'byte_q25', 'byte_q75',
+        'count_0', 'count_255', 'count_0x90', 'count_printable', 'entropy',
+        'seg0_mean', 'seg0_std', 'seg0_entropy',
+        'seg1_mean', 'seg1_std', 'seg1_entropy',
+        'seg2_mean', 'seg2_std', 'seg2_entropy',
+        'chunk_mean_0', 'chunk_mean_1', 'chunk_mean_2', 'chunk_mean_3', 'chunk_mean_4',
+        'chunk_mean_5', 'chunk_mean_6', 'chunk_mean_7', 'chunk_mean_8', 'chunk_mean_9',
+        'chunk_std_0', 'chunk_std_1', 'chunk_std_2', 'chunk_std_3', 'chunk_std_4',
+        'chunk_std_5', 'chunk_std_6', 'chunk_std_7', 'chunk_std_8', 'chunk_std_9',
+        'chunk_mean_diff_mean_abs', 'chunk_mean_diff_std', 'chunk_mean_diff_max', 'chunk_mean_diff_min',
+        'chunk_std_diff_mean_abs', 'chunk_std_diff_std', 'chunk_std_diff_max', 'chunk_std_diff_min'
+    ]
+    feature_gain = model.feature_importance(importance_type='gain')
+    feature_split = model.feature_importance(importance_type='split')
+    model_feature_names = list(model.feature_name() or [])
+    if len(model_feature_names) != len(feature_gain):
+        model_feature_names = list(feature_columns[:len(feature_gain)])
+    if len(model_feature_names) < len(feature_gain):
+        model_feature_names.extend([f'feature_{i}' for i in range(len(model_feature_names), len(feature_gain))])
+    def _parse_feature_id(name):
+        m = re.search(r'(\d+)$', str(name))
+        if not m:
+            return None
+        return int(m.group(1))
+    def _feature_id_to_real_name(feature_id):
+        if feature_id < len(stat_feature_names):
+            return stat_feature_names[feature_id]
+        x = feature_id - len(stat_feature_names)
+        if x < 256:
+            return f'lw_{x}'
+        pe_idx = x - 256
+        if pe_idx < len(PE_FEATURE_ORDER):
+            return PE_FEATURE_ORDER[pe_idx]
+        return f'pe_extra_{pe_idx - len(PE_FEATURE_ORDER)}'
+    rows = []
+    for idx in range(len(feature_gain)):
+        feature_key = str(model_feature_names[idx])
+        feature_id = _parse_feature_id(feature_key)
+        if feature_id is None:
+            feature_id = idx
+        rows.append({
+            'rank': 0,
+            'feature': feature_key,
+            'feature_id': int(feature_id),
+            'feature_name': _feature_id_to_real_name(int(feature_id)),
+            'gain_importance': float(feature_gain[idx]),
+            'split_importance': float(feature_split[idx]),
+        })
+    rows = sorted(rows, key=lambda x: x['gain_importance'], reverse=True)
+    for rank, row in enumerate(rows, 1):
+        row['rank'] = int(rank)
+    feature_importance_df = pd.DataFrame(rows)
+    full_importance_csv = Path(RESOURCES_DIR) / 'eval' / 'full_feature_importance_ranking.csv'
+    full_importance_json = Path(RESOURCES_DIR) / 'eval' / 'full_feature_importance_ranking.json'
+    os.makedirs(full_importance_csv.parent, exist_ok=True)
+    feature_importance_df.to_csv(full_importance_csv, index=False, encoding='utf-8-sig')
+    full_importance_json.write_text(feature_importance_df.to_json(orient='records', force_ascii=False, indent=2), encoding='utf-8')
+    print('\n[*] Full feature importance ranking (all features):')
+    for row in rows:
+        print(f"    {int(row['rank']):4d}. {row['feature_name']} [{row['feature']}] gain={row['gain_importance']:.6f} split={row['split_importance']:.0f}")
+    print(f"[+] Full feature importance CSV saved to: {full_importance_csv}")
+    print(f"[+] Full feature importance JSON saved to: {full_importance_json}")
 
     print(f"\n[+] LightGBM pre-training completed! Model saved to: {MODEL_PATH}")
 
@@ -5580,6 +5656,8 @@ class MalwareScanner:
         self.binary_classifier = None
         self.routing_model = None
         self.feature_scaler = None
+        self.feature_selector_indices = None
+        self.feature_selector_input_dim = None
         self.prediction_threshold = float(PREDICTION_THRESHOLD)
         self.print_only_malicious = SCAN_PRINT_ONLY_MALICIOUS if print_only_malicious is None else bool(print_only_malicious)
         self.print_malicious_paths = SCAN_PRINT_ONLY_MALICIOUS if print_malicious_paths is None else bool(print_malicious_paths)
@@ -5627,6 +5705,23 @@ class MalwareScanner:
         except Exception as e:
             self._debug(f"[!] Failed to load threshold report: {e}")
             self.prediction_threshold = float(PREDICTION_THRESHOLD)
+        try:
+            selector_path = os.path.join(os.path.dirname(MODEL_PATH), 'feature_selector.json')
+            if os.path.exists(selector_path):
+                with open(selector_path, 'r', encoding='utf-8') as f:
+                    selector_payload = json.load(f)
+                selected = selector_payload.get('selected_indices') or []
+                selected = [int(i) for i in selected if int(i) >= 0]
+                if selected:
+                    self.feature_selector_indices = np.asarray(selected, dtype=np.int64)
+                    n_in = selector_payload.get('n_features_in')
+                    if n_in is not None:
+                        self.feature_selector_input_dim = int(n_in)
+                    self._debug(f"[+] Feature selector loaded: input={self.feature_selector_input_dim}, selected={len(selected)}")
+        except Exception as e:
+            self._debug(f"[!] Failed to load feature selector: {e}")
+            self.feature_selector_indices = None
+            self.feature_selector_input_dim = None
 
         self._debug("[*] Loading family classifier...")
         self.family_classifier = FamilyClassifier()
@@ -5736,6 +5831,7 @@ class MalwareScanner:
     def _predict_malware_from_features(self, features):
         try:
             feature_vector = features.reshape(1, -1)
+            feature_vector = self._apply_feature_selector(feature_vector)
             if self.feature_scaler is not None:
                 feature_vector = self.feature_scaler.transform(feature_vector)
             
@@ -5757,6 +5853,7 @@ class MalwareScanner:
 
     def _predict_malware_batch(self, features_matrix):
         try:
+            features_matrix = self._apply_feature_selector(features_matrix)
             if self.feature_scaler is not None:
                 features_matrix = self.feature_scaler.transform(features_matrix)
             if self.routing_model is not None:
@@ -5774,6 +5871,23 @@ class MalwareScanner:
             self._debug(f"[!] Batch prediction failed: {e}")
             count = len(features_matrix)
             return [False] * count, [0.0] * count
+
+    def _apply_feature_selector(self, features_matrix):
+        if self.feature_selector_indices is None:
+            return features_matrix
+        if features_matrix is None:
+            return features_matrix
+        if np.ndim(features_matrix) != 2:
+            return features_matrix
+        current_dim = int(features_matrix.shape[1]) if features_matrix.shape[1] is not None else 0
+        expected_dim = int(self.feature_selector_input_dim) if self.feature_selector_input_dim is not None else current_dim
+        if expected_dim > 0 and current_dim != expected_dim:
+            self._debug(f"[!] Feature selector skipped due to dim mismatch: current={current_dim}, expected={expected_dim}")
+            return features_matrix
+        valid_indices = self.feature_selector_indices[self.feature_selector_indices < current_dim]
+        if valid_indices.size == 0:
+            return features_matrix
+        return features_matrix[:, valid_indices]
 
     def scan_batch(self, file_paths):
         final_results = [None] * len(file_paths)
