@@ -15,6 +15,7 @@
 import os
 import argparse
 import asyncio
+import re
 import sys
 import importlib.abc
 import importlib.util
@@ -1550,6 +1551,9 @@ _register_embedded("utils", r'''pass
 ''', is_package=True)
 
 _register_embedded("utils.logging_utils", r'''import os
+import re
+import sys
+import threading
 import builtins
 import logging
 from datetime import datetime, timedelta
@@ -1563,6 +1567,10 @@ _BACKUP_COUNT = 6
 _RETENTION_DAYS = 30
 _PRINT_REDIRECT_INSTALLED = False
 _PRINT_LOGGER_NAME = 'print_redirect'
+_CONSOLE_REDIRECT_INSTALLED = False
+_FD_REDIRECT_INSTALLED = False
+_FD_REDIRECT_READERS = []
+_FD_EMIT_STREAMS = {}
 
 def _project_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -1663,6 +1671,143 @@ def redirect_print_to_logger(logger_name='print_redirect'):
     _PRINT_LOGGER_NAME = logger_name
     builtins.print = _redirected_print
     _PRINT_REDIRECT_INSTALLED = True
+
+def _looks_like_progress_output(text):
+    if '\r' in text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if 'it/s' in stripped:
+        return True
+    return ('%' in stripped and '|' in stripped)
+
+def _extract_progress_fragments(text):
+    if text is None:
+        return []
+    progress_pattern = re.compile(r'([^\r\n]*\d{1,3}%\|[^\r\n]*\|\s*\d+/\d+\s*\[[^\r\n]*?\])')
+    fragments = []
+    for match in progress_pattern.finditer(str(text)):
+        fragment = match.group(1)
+        if fragment:
+            fragments.append(fragment)
+    return fragments
+
+def _split_progress_and_noise(text):
+    output = str(text or '')
+    progress_fragments = _extract_progress_fragments(output)
+    noise = output
+    for fragment in progress_fragments:
+        noise = noise.replace(fragment, ' ')
+    noise = noise.replace('\r', '\n')
+    noise_lines = [line.strip() for line in noise.splitlines() if line.strip()]
+    return progress_fragments, noise_lines
+
+def _emit_progress_fragments(fragments, stream):
+    if not fragments:
+        return 0
+    written = 0
+    for fragment in fragments:
+        written += stream.write('\r' + fragment)
+    stream.flush()
+    return written
+
+def _log_noise_lines(noise_lines, logger_name):
+    if not noise_lines:
+        return
+    logger = logging.getLogger(logger_name)
+    for line in noise_lines:
+        logger.info(line)
+
+def _resolve_emit_stream(fd, fallback_stream):
+    stream = _FD_EMIT_STREAMS.get(fd)
+    if stream is not None:
+        return stream
+    return fallback_stream
+
+def _start_fd_redirect(fd, logger_name, fallback_stream):
+    original_fd = os.dup(fd)
+    encoding = getattr(fallback_stream, 'encoding', None) or 'utf-8'
+    emit_stream = os.fdopen(original_fd, 'w', encoding=encoding, errors='replace', buffering=1)
+    _FD_EMIT_STREAMS[fd] = emit_stream
+    read_fd, write_fd = os.pipe()
+    os.dup2(write_fd, fd)
+    os.close(write_fd)
+    def _reader():
+        with os.fdopen(read_fd, 'rb', buffering=0) as reader:
+            while True:
+                chunk = reader.read(4096)
+                if not chunk:
+                    break
+                text = chunk.decode(encoding, errors='replace')
+                progress_fragments, noise_lines = _split_progress_and_noise(text)
+                _emit_progress_fragments(progress_fragments, emit_stream)
+                _log_noise_lines(noise_lines, logger_name)
+    worker = threading.Thread(target=_reader, daemon=True)
+    worker.start()
+    _FD_REDIRECT_READERS.append(worker)
+
+class _ProgressOnlyConsoleStream:
+    def __init__(self, stream, logger_name, fd=None):
+        self._stream = stream
+        self._logger_name = logger_name
+        self._fd = fd
+        self._last_progress = False
+        self.encoding = getattr(stream, 'encoding', 'utf-8')
+
+    def write(self, text):
+        if text is None:
+            return 0
+        output = str(text)
+        if not output:
+            return 0
+        target_stream = _resolve_emit_stream(self._fd, self._stream)
+        progress_fragments, noise_lines = _split_progress_and_noise(output)
+        if progress_fragments:
+            combined = ''.join(('\r' + fragment) for fragment in progress_fragments)
+            self._last_progress = True
+            target_stream.write(combined)
+            target_stream.flush()
+            _log_noise_lines(noise_lines, self._logger_name)
+            return len(output)
+        is_progress = _looks_like_progress_output(output)
+        if is_progress or ((output == '\n' or output == '\r\n') and self._last_progress):
+            self._last_progress = is_progress
+            return target_stream.write(output)
+        cleaned = output.strip()
+        if cleaned:
+            logging.getLogger(self._logger_name).info(cleaned)
+        self._last_progress = False
+        return len(output)
+
+    def flush(self):
+        return self._stream.flush()
+
+    def isatty(self):
+        isatty = getattr(self._stream, 'isatty', None)
+        if callable(isatty):
+            return isatty()
+        return False
+
+    def fileno(self):
+        fileno = getattr(self._stream, 'fileno', None)
+        if callable(fileno):
+            return fileno()
+        raise OSError('fileno is not available')
+
+def redirect_console_to_logger_allow_progress(logger_name='console_redirect'):
+    global _CONSOLE_REDIRECT_INSTALLED, _FD_REDIRECT_INSTALLED
+    if _CONSOLE_REDIRECT_INSTALLED:
+        return
+    stdout_stream = getattr(sys, '__stdout__', None) or sys.stdout
+    stderr_stream = getattr(sys, '__stderr__', None) or sys.stderr
+    if not _FD_REDIRECT_INSTALLED:
+        _start_fd_redirect(1, logger_name, stdout_stream)
+        _start_fd_redirect(2, logger_name, stderr_stream)
+        _FD_REDIRECT_INSTALLED = True
+    sys.stdout = _ProgressOnlyConsoleStream(stdout_stream, logger_name, fd=1)
+    sys.stderr = _ProgressOnlyConsoleStream(stderr_stream, logger_name, fd=2)
+    _CONSOLE_REDIRECT_INSTALLED = True
 
 def get_logger(name='kolo'):
     if not logging.getLogger().handlers:
@@ -2361,7 +2506,7 @@ def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, f
         pass
     return X, y, valid_files
 
-def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_MAX_FILE_SIZE, file_extensions=None, label_inference='filename'):
+def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_MAX_FILE_SIZE, file_extensions=None, label_inference='filename', max_workers=16):
     print(f"[*] Extracting features from raw files: {data_dir}")
     print(f"[*] Output directory: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
@@ -2416,14 +2561,18 @@ def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_
     from tqdm import tqdm
     successful_output_files = []
     successful_labels = []
-    write_workers = RAW_EXTRACT_WRITE_WORKERS
+    effective_workers = int(max(1, max_workers))
+    write_workers = min(RAW_EXTRACT_WRITE_WORKERS, effective_workers)
     compress_npz = RAW_EXTRACT_COMPRESS_NPZ
     for batch_start in tqdm(range(0, len(all_files), NATIVE_BATCH_SIZE), total=(len(all_files) + NATIVE_BATCH_SIZE - 1) // NATIVE_BATCH_SIZE, desc="Feature extraction"):
         batch_end = min(batch_start + NATIVE_BATCH_SIZE, len(all_files))
         batch_inputs = all_files[batch_start:batch_end]
         batch_outputs = output_files[batch_start:batch_end]
         batch_labels = labels[batch_start:batch_end]
-        batch_pe_features, batch_status = extract_combined_pe_features_batch_native(batch_inputs, thread_count=NATIVE_BATCH_THREADS)
+        batch_pe_features, batch_status = extract_combined_pe_features_batch_native(
+            batch_inputs,
+            thread_count=min(NATIVE_BATCH_THREADS, effective_workers),
+        )
         def _process_one(idx):
             input_file = batch_inputs[idx]
             output_file = batch_outputs[idx]
@@ -4436,6 +4585,707 @@ def main():
 
 if __name__ == "__main__":
     main()
+''')
+
+_register_embedded("training.hardcase_dl", r'''import os
+import json
+import random
+import re
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, label_binarize
+from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix, roc_curve, auc
+from config.config import HDBSCAN_SAVE_DIR, RESOURCES_DIR, FEATURES_PKL_PATH
+
+LABEL_TO_ID = {'hard_samples': 0, 'false_positives': 1, 'false_negatives': 2}
+ID_TO_LABEL = {0: 'hard_samples', 1: 'false_positives', 2: 'false_negatives'}
+ID_TO_LABEL_ZH = {0: '原区分困难', 1: '原假阳性', 2: '原假阴性'}
+
+class HardCaseNet(nn.Module):
+    def __init__(self, input_dim, dropout=0.25):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.8),
+            nn.Linear(128, 3),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class HardCaseResBlock(nn.Module):
+    def __init__(self, dim, dropout=0.2):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.BatchNorm1d(dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim, dim),
+            nn.BatchNorm1d(dim),
+        )
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        return self.act(x + self.block(x))
+
+class HardCaseResNet(nn.Module):
+    def __init__(self, input_dim, dropout=0.25):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+        )
+        self.res1 = HardCaseResBlock(512, dropout=dropout)
+        self.down1 = nn.Sequential(nn.Linear(512, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(dropout))
+        self.res2 = HardCaseResBlock(256, dropout=dropout)
+        self.head = nn.Sequential(nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout * 0.8), nn.Linear(128, 3))
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.res1(x)
+        x = self.down1(x)
+        x = self.res2(x)
+        return self.head(x)
+
+def _build_hardcase_model(args, input_dim):
+    arch = str(getattr(args, 'model_arch', 'resmlp')).lower()
+    if arch == 'mlp':
+        return HardCaseNet(input_dim=input_dim, dropout=args.dropout), 'HardCaseNet'
+    return HardCaseResNet(input_dim=input_dim, dropout=args.dropout), 'HardCaseResNet'
+def _set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def _latest_report(pattern):
+    base_dir = Path(HDBSCAN_SAVE_DIR)
+    files = sorted(base_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+def _read_json(path):
+    if path is None or not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return []
+
+def _feature_idx(name):
+    m = re.search(r'(\d+)$', str(name))
+    if not m:
+        return None
+    return int(m.group(1))
+
+def _collect_records():
+    sources = [
+        ('hard_samples', 'hard_samples_*.json'),
+        ('false_positives', 'false_positives_*.json'),
+        ('false_negatives', 'false_negitives_*.json'),
+    ]
+    grouped = {}
+    for name, pattern in sources:
+        grouped[name] = _read_json(_latest_report(pattern))
+    return grouped
+
+def _build_dataset(records_by_type, max_samples_per_class=0):
+    max_idx = -1
+    for records in records_by_type.values():
+        for item in records:
+            fmap = item.get('feature_importance', {}) or {}
+            for k in fmap.keys():
+                idx = _feature_idx(k)
+                if idx is not None and idx > max_idx:
+                    max_idx = idx
+    if max_idx < 0:
+        return None, None, {}
+    feature_dim = int(max_idx + 2)
+    X = []
+    y = []
+    class_counts = {}
+    for label_name, records in records_by_type.items():
+        if not records:
+            continue
+        if max_samples_per_class and max_samples_per_class > 0:
+            records = records[:max_samples_per_class]
+        class_counts[label_name] = len(records)
+        for item in records:
+            vec = np.zeros(feature_dim, dtype=np.float32)
+            fmap = item.get('feature_importance', {}) or {}
+            for k, v in fmap.items():
+                idx = _feature_idx(k)
+                if idx is None or idx < 0 or idx >= feature_dim - 1:
+                    continue
+                vec[idx] = float(abs(float(v)))
+            vec[feature_dim - 1] = float(item.get('prediction_probability', 0.0))
+            X.append(vec)
+            y.append(int(LABEL_TO_ID[label_name]))
+    if not X:
+        return None, None, class_counts
+    return np.asarray(X, dtype=np.float32), np.asarray(y, dtype=np.int64), class_counts
+
+def _normalize_sample_name(v):
+    return str(v).replace('\\', '/').lower()
+
+def _build_dataset_from_features_pkl(records_by_type, max_samples_per_class=0):
+    pkl_path = Path(FEATURES_PKL_PATH)
+    if not pkl_path.exists():
+        return None, None, {}
+    try:
+        df = pd.read_pickle(pkl_path)
+    except Exception:
+        return None, None, {}
+    if 'filename' not in df.columns:
+        return None, None, {}
+    feature_cols = [c for c in df.columns if str(c).startswith('feature_')]
+    if not feature_cols:
+        return None, None, {}
+    filename_norm = df['filename'].astype(str).map(_normalize_sample_name)
+    full_map = {}
+    base_map = {}
+    feature_matrix = df[feature_cols].to_numpy(dtype=np.float32)
+    for i, name in enumerate(filename_norm.tolist()):
+        full_map[name] = i
+        base = name.split('/')[-1]
+        if base not in base_map:
+            base_map[base] = []
+        base_map[base].append(i)
+    X = []
+    y = []
+    class_counts = {}
+    for label_name, records in records_by_type.items():
+        if not records:
+            continue
+        if max_samples_per_class and max_samples_per_class > 0:
+            records = records[:max_samples_per_class]
+        used = 0
+        for item in records:
+            sid = _normalize_sample_name(item.get('sample_id', ''))
+            idx = full_map.get(sid)
+            if idx is None:
+                base = sid.split('/')[-1]
+                cand = base_map.get(base, [])
+                if len(cand) == 1:
+                    idx = cand[0]
+            if idx is None:
+                continue
+            X.append(feature_matrix[idx])
+            y.append(int(LABEL_TO_ID[label_name]))
+            used += 1
+        class_counts[label_name] = int(used)
+    if len(X) < 30:
+        return None, None, class_counts
+    return np.asarray(X, dtype=np.float32), np.asarray(y, dtype=np.int64), class_counts
+
+def _select_dense_features(X_train, X_val, max_input_dim, extra_stat_dim=6):
+    if X_train.ndim != 2 or X_val.ndim != 2:
+        return X_train, X_val, np.arange(X_train.shape[1], dtype=np.int64)
+    n_feat = int(X_train.shape[1])
+    if n_feat <= 0:
+        return X_train, X_val, np.zeros((0,), dtype=np.int64)
+    mean_abs = np.mean(np.abs(X_train), axis=0)
+    var = np.var(X_train, axis=0)
+    nz_ratio = np.mean(np.abs(X_train) > 1e-12, axis=0)
+    score = mean_abs * 0.6 + var * 0.3 + nz_ratio * 0.1
+    k = int(max(8, min(max_input_dim, n_feat)))
+    selected_idx = np.argsort(score)[::-1][:k].astype(np.int64)
+    X_train_sel = X_train[:, selected_idx]
+    X_val_sel = X_val[:, selected_idx]
+    if extra_stat_dim > 0:
+        def _extra(x):
+            eps = 1e-12
+            abs_x = np.abs(x)
+            l1 = np.sum(abs_x, axis=1, keepdims=True)
+            l2 = np.sqrt(np.sum(x * x, axis=1, keepdims=True) + eps)
+            max_v = np.max(abs_x, axis=1, keepdims=True)
+            mean_v = np.mean(abs_x, axis=1, keepdims=True)
+            nz = np.mean(abs_x > eps, axis=1, keepdims=True)
+            p90 = np.percentile(abs_x, 90, axis=1).reshape(-1, 1)
+            return np.concatenate([l1, l2, max_v, mean_v, nz, p90], axis=1).astype(np.float32)
+        X_train_sel = np.hstack([X_train_sel, _extra(X_train_sel)]).astype(np.float32)
+        X_val_sel = np.hstack([X_val_sel, _extra(X_val_sel)]).astype(np.float32)
+    return X_train_sel, X_val_sel, selected_idx
+
+def _compute_class_weights(y_train):
+    counts = np.bincount(y_train, minlength=3).astype(np.float32)
+    counts[counts <= 0] = 1.0
+    inv = 1.0 / counts
+    w = inv / np.mean(inv)
+    return torch.tensor(w, dtype=torch.float32)
+
+class FocalCrossEntropy(nn.Module):
+    def __init__(self, class_weights, gamma=2.0, label_smoothing=0.0):
+        super().__init__()
+        self.gamma = float(gamma)
+        self.ce = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=float(label_smoothing), reduction='none')
+
+    def forward(self, logits, target):
+        ce = self.ce(logits, target)
+        pt = torch.exp(-ce)
+        focal = ((1.0 - pt).clamp(min=1e-8) ** self.gamma) * ce
+        return focal.mean()
+
+def _build_sample_weights(y_train, class_weights, hard_class_boost=1.0):
+    y = np.asarray(y_train, dtype=np.int64)
+    cw = np.asarray(class_weights, dtype=np.float32)
+    sample_w = cw[y].astype(np.float32)
+    if sample_w.size > 0 and hard_class_boost > 1.0:
+        sample_w[y == 0] *= float(hard_class_boost)
+    sample_w = np.clip(sample_w, 1e-6, None)
+    return sample_w
+
+def _decide_predictions(score_array, args=None):
+    preds = np.argmax(score_array, axis=1).astype(np.int64)
+    if args is None or not bool(getattr(args, 'fn_priority_mode', False)):
+        return preds
+    fn_idx = int(LABEL_TO_ID['false_negatives'])
+    fn_threshold = float(getattr(args, 'fn_threshold', 0.45))
+    fn_margin = float(getattr(args, 'fn_margin', 0.0))
+    other = np.delete(score_array, fn_idx, axis=1)
+    other_max = np.max(other, axis=1)
+    fn_score = score_array[:, fn_idx]
+    force_mask = (fn_score >= fn_threshold) & ((fn_score - other_max) >= fn_margin)
+    preds[force_mask] = fn_idx
+    return preds
+
+def _evaluate(model, loader, device, args=None):
+    model.eval()
+    all_preds = []
+    all_targets = []
+    all_scores = []
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            logits = model(xb)
+            probs = torch.softmax(logits, dim=1)
+            all_targets.extend(yb.cpu().numpy().tolist())
+            all_scores.extend(probs.cpu().numpy().tolist())
+    if not all_targets or not all_scores:
+        return {'accuracy': 0.0, 'macro_f1': 0.0, 'report': {}, 'confusion_matrix': [[0, 0, 0], [0, 0, 0], [0, 0, 0]], 'targets': [], 'preds': [], 'scores': []}
+    score_array = np.asarray(all_scores, dtype=np.float32)
+    pred_array = _decide_predictions(score_array, args=args)
+    all_preds = pred_array.tolist()
+    acc = float(accuracy_score(all_targets, all_preds))
+    macro_f1 = float(f1_score(all_targets, all_preds, average='macro', zero_division=0))
+    report = classification_report(all_targets, all_preds, target_names=[ID_TO_LABEL[i] for i in range(3)], output_dict=True, zero_division=0)
+    cm = confusion_matrix(all_targets, all_preds, labels=[0, 1, 2]).tolist()
+    return {'accuracy': acc, 'macro_f1': macro_f1, 'report': report, 'confusion_matrix': cm, 'targets': all_targets, 'preds': all_preds, 'scores': score_array.tolist()}
+
+def _evaluate_from_scores(targets, scores, args=None):
+    target_array = np.asarray(targets, dtype=np.int64)
+    score_array = np.asarray(scores, dtype=np.float32)
+    if target_array.size == 0 or score_array.size == 0:
+        return {'accuracy': 0.0, 'macro_f1': 0.0, 'report': {}, 'confusion_matrix': [[0, 0, 0], [0, 0, 0], [0, 0, 0]], 'targets': [], 'preds': [], 'scores': []}
+    pred_array = _decide_predictions(score_array, args=args)
+    acc = float(accuracy_score(target_array, pred_array))
+    macro_f1 = float(f1_score(target_array, pred_array, average='macro', zero_division=0))
+    report = classification_report(target_array, pred_array, target_names=[ID_TO_LABEL[i] for i in range(3)], output_dict=True, zero_division=0)
+    cm = confusion_matrix(target_array, pred_array, labels=[0, 1, 2]).tolist()
+    return {
+        'accuracy': acc,
+        'macro_f1': macro_f1,
+        'report': report,
+        'confusion_matrix': cm,
+        'targets': target_array.tolist(),
+        'preds': pred_array.tolist(),
+        'scores': score_array.tolist(),
+    }
+
+def _make_decision_args(fn_priority_mode=False, fn_threshold=0.45, fn_margin=0.0):
+    return type('DecisionArgs', (), {
+        'fn_priority_mode': bool(fn_priority_mode),
+        'fn_threshold': float(fn_threshold),
+        'fn_margin': float(fn_margin),
+    })()
+
+def _train_one_branch(train_ds, val_loader, X_train, y_train, device, args, model_arch, fn_boost, fn_priority_mode, fn_threshold, fn_margin):
+    class_weights = _compute_class_weights(y_train).cpu().numpy()
+    if float(fn_boost) > 1.0:
+        class_weights[LABEL_TO_ID['false_negatives']] *= float(fn_boost)
+        class_weights = class_weights / np.mean(class_weights)
+    if args.use_weighted_sampler:
+        sample_weights = _build_sample_weights(y_train, class_weights, hard_class_boost=args.hard_class_boost)
+        sampler = WeightedRandomSampler(weights=torch.from_numpy(sample_weights), num_samples=len(sample_weights), replacement=True)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    model_args = type('ModelArgs', (), {'model_arch': model_arch, 'dropout': args.dropout})()
+    model, model_name = _build_hardcase_model(model_args, X_train.shape[1])
+    model = model.to(device)
+    criterion = FocalCrossEntropy(
+        class_weights=torch.from_numpy(class_weights).to(device),
+        gamma=args.focal_gamma,
+        label_smoothing=args.label_smoothing
+    )
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    best = {'macro_f1': -1.0, 'state': None, 'epoch': 0}
+    wait = 0
+    history = []
+    eval_args = _make_decision_args(fn_priority_mode=fn_priority_mode, fn_threshold=fn_threshold, fn_margin=fn_margin)
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        epoch_loss = 0.0
+        for xb, yb in train_loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+            optimizer.step()
+            epoch_loss += float(loss.item())
+        val_metric = _evaluate(model, val_loader, device, args=eval_args)
+        train_loss = float(epoch_loss / max(1, len(train_loader)))
+        history.append({'epoch': int(epoch), 'train_loss': train_loss, 'val_accuracy': float(val_metric['accuracy']), 'val_macro_f1': float(val_metric['macro_f1'])})
+        if val_metric['macro_f1'] > best['macro_f1'] + 1e-9:
+            best['macro_f1'] = float(val_metric['macro_f1'])
+            best['epoch'] = int(epoch)
+            best['state'] = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            wait = 0
+        else:
+            wait += 1
+            if wait >= args.patience:
+                break
+    if best['state'] is not None:
+        model.load_state_dict(best['state'])
+    final_eval = _evaluate(model, val_loader, device, args=eval_args)
+    return {
+        'model': model,
+        'model_name': model_name,
+        'best_epoch': int(best['epoch']),
+        'history': history,
+        'eval': final_eval,
+    }
+
+def _bootstrap_stability(final_eval, rounds=200, seed=42):
+    targets = np.asarray(final_eval.get('targets', []), dtype=np.int64)
+    preds = np.asarray(final_eval.get('preds', []), dtype=np.int64)
+    n = int(targets.shape[0])
+    if n == 0 or preds.shape[0] != n:
+        return {'rounds': int(rounds), 'macro_f1_mean': 0.0, 'macro_f1_p05': 0.0, 'macro_f1_p95': 0.0, 'accuracy_mean': 0.0, 'accuracy_p05': 0.0, 'accuracy_p95': 0.0}
+    rng = np.random.default_rng(int(seed))
+    f1_list = []
+    acc_list = []
+    for _ in range(int(max(10, rounds))):
+        idx = rng.integers(0, n, size=n)
+        yt = targets[idx]
+        yp = preds[idx]
+        f1_list.append(float(f1_score(yt, yp, average='macro', zero_division=0)))
+        acc_list.append(float(accuracy_score(yt, yp)))
+    f1_arr = np.asarray(f1_list, dtype=np.float32)
+    acc_arr = np.asarray(acc_list, dtype=np.float32)
+    return {
+        'rounds': int(max(10, rounds)),
+        'macro_f1_mean': float(np.mean(f1_arr)),
+        'macro_f1_p05': float(np.percentile(f1_arr, 5)),
+        'macro_f1_p95': float(np.percentile(f1_arr, 95)),
+        'accuracy_mean': float(np.mean(acc_arr)),
+        'accuracy_p05': float(np.percentile(acc_arr, 5)),
+        'accuracy_p95': float(np.percentile(acc_arr, 95)),
+    }
+
+def _save_eval_figures(final_eval, eval_dir):
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'Arial Unicode MS', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    cm_path = eval_dir / 'hardcase_dl_confusion_matrix.png'
+    roc_path = eval_dir / 'hardcase_dl_roc_auc.png'
+    cm = np.asarray(final_eval.get('confusion_matrix', [[0, 0, 0], [0, 0, 0], [0, 0, 0]]), dtype=np.int64)
+    plt.figure(figsize=(7, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=[ID_TO_LABEL_ZH[i] for i in range(3)], yticklabels=[ID_TO_LABEL_ZH[i] for i in range(3)])
+    plt.xlabel('预测类别')
+    plt.ylabel('真实类别')
+    plt.title('HardCase 三分类混淆矩阵')
+    plt.tight_layout()
+    plt.savefig(cm_path, dpi=220)
+    plt.close()
+    targets = np.asarray(final_eval.get('targets', []), dtype=np.int64)
+    preds = np.asarray(final_eval.get('preds', []), dtype=np.int64)
+    scores = np.asarray(final_eval.get('scores', []), dtype=np.float32)
+    if preds.size == 0 and scores.size > 0 and scores.ndim == 2:
+        preds = np.argmax(scores, axis=1).astype(np.int64)
+    one_vs_rest_paths = {}
+    if targets.size > 0 and preds.size == targets.size:
+        for i in range(3):
+            cls_zh = ID_TO_LABEL_ZH[i]
+            y_true_bin = (targets == i).astype(np.int64)
+            y_pred_bin = (preds == i).astype(np.int64)
+            cm_bin = confusion_matrix(y_true_bin, y_pred_bin, labels=[0, 1])
+            path_bin = eval_dir / f'hardcase_dl_confusion_matrix_{ID_TO_LABEL[i]}.png'
+            plt.figure(figsize=(6, 5))
+            sns.heatmap(
+                cm_bin,
+                annot=True,
+                fmt='d',
+                cmap='Blues',
+                xticklabels=['预测非该类', f'预测{cls_zh}'],
+                yticklabels=['真实非该类', f'真实{cls_zh}']
+            )
+            plt.xlabel('预测')
+            plt.ylabel('真实')
+            plt.title(f'{cls_zh} 二分类混淆矩阵')
+            plt.tight_layout()
+            plt.savefig(path_bin, dpi=220)
+            plt.close()
+            one_vs_rest_paths[ID_TO_LABEL[i]] = str(path_bin)
+    if targets.size > 0 and scores.size > 0 and scores.ndim == 2 and scores.shape[1] == 3:
+        y_bin = label_binarize(targets, classes=[0, 1, 2])
+        plt.figure(figsize=(8, 6))
+        auc_macro_values = []
+        for i in range(3):
+            if np.unique(y_bin[:, i]).size < 2:
+                continue
+            fpr, tpr, _ = roc_curve(y_bin[:, i], scores[:, i])
+            class_auc = float(auc(fpr, tpr))
+            auc_macro_values.append(class_auc)
+            plt.plot(fpr, tpr, label=f"{ID_TO_LABEL_ZH[i]} AUC={class_auc:.4f}")
+        plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        macro_auc = float(np.mean(auc_macro_values)) if auc_macro_values else 0.0
+        plt.title(f'HardCase ROC 曲线（宏平均AUC={macro_auc:.4f}）')
+        plt.xlabel('假阳性率')
+        plt.ylabel('真正率')
+        plt.legend(loc='lower right')
+        plt.tight_layout()
+        plt.savefig(roc_path, dpi=220)
+        plt.close()
+    else:
+        plt.figure(figsize=(8, 6))
+        plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        plt.title('HardCase ROC 曲线（数据不足）')
+        plt.xlabel('假阳性率')
+        plt.ylabel('真正率')
+        plt.tight_layout()
+        plt.savefig(roc_path, dpi=220)
+        plt.close()
+    return {
+        'multiclass_confusion_matrix_path': str(cm_path),
+        'roc_auc_path': str(roc_path),
+        'binary_confusion_matrices': one_vs_rest_paths,
+    }
+
+def run_training(args):
+    _set_seed(args.seed)
+    records = _collect_records()
+    X, y, class_counts = _build_dataset_from_features_pkl(records, max_samples_per_class=args.max_samples_per_class)
+    data_source = 'features_pkl'
+    if X is None or y is None or len(y) < 30:
+        X, y, class_counts = _build_dataset(records, max_samples_per_class=args.max_samples_per_class)
+        data_source = 'hardcase_reports'
+    if X is None or y is None or len(y) < 30:
+        raise RuntimeError('困难样本/假阳性/假阴性样本不足，无法训练深度学习模型')
+    unique_cls = np.unique(y)
+    if len(unique_cls) < 3:
+        raise RuntimeError('三类样本不完整，至少需要 hard_samples/false_positives/false_negatives 三类')
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=args.val_size, random_state=args.seed, stratify=y
+    )
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train).astype(np.float32)
+    X_val = scaler.transform(X_val).astype(np.float32)
+    X_train, X_val, selected_idx = _select_dense_features(X_train, X_val, max_input_dim=args.max_input_dim, extra_stat_dim=6)
+    train_ds = TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train))
+    val_ds = TensorDataset(torch.from_numpy(X_val), torch.from_numpy(y_val))
+    val_loader = DataLoader(val_ds, batch_size=max(64, args.batch_size))
+    device = torch.device(args.device if args.device in ['cpu', 'cuda'] else ('cuda' if torch.cuda.is_available() else 'cpu'))
+    cascade_summary = {}
+    if args.enable_cascade:
+        base_out = _train_one_branch(
+            train_ds, val_loader, X_train, y_train, device, args,
+            model_arch=args.cascade_base_arch,
+            fn_boost=1.0,
+            fn_priority_mode=False,
+            fn_threshold=args.fn_threshold,
+            fn_margin=args.fn_margin
+        )
+        fn_out = _train_one_branch(
+            train_ds, val_loader, X_train, y_train, device, args,
+            model_arch=args.cascade_fn_arch,
+            fn_boost=args.fn_class_weight_boost,
+            fn_priority_mode=True,
+            fn_threshold=args.fn_threshold,
+            fn_margin=args.fn_margin
+        )
+        base_scores = np.asarray(base_out['eval']['scores'], dtype=np.float32)
+        fn_scores = np.asarray(fn_out['eval']['scores'], dtype=np.float32)
+        fn_idx = int(LABEL_TO_ID['false_negatives'])
+        other = np.delete(fn_scores, fn_idx, axis=1)
+        other_max = np.max(other, axis=1)
+        fn_prob = fn_scores[:, fn_idx]
+        cascade_mask = (fn_prob >= float(args.cascade_fn_threshold)) & ((fn_prob - other_max) >= float(args.cascade_fn_margin))
+        cascade_scores = base_scores.copy()
+        cascade_scores[:, fn_idx] = np.maximum(cascade_scores[:, fn_idx], fn_prob)
+        denom = np.sum(cascade_scores, axis=1, keepdims=True)
+        denom[denom <= 1e-12] = 1.0
+        cascade_scores = cascade_scores / denom
+        cascade_args = _make_decision_args(fn_priority_mode=False, fn_threshold=args.fn_threshold, fn_margin=args.fn_margin)
+        raw_eval = _evaluate_from_scores(y_val, cascade_scores, args=cascade_args)
+        preds = np.asarray(raw_eval['preds'], dtype=np.int64)
+        preds[cascade_mask] = fn_idx
+        y_val_arr = np.asarray(y_val, dtype=np.int64)
+        final_eval = {
+            'accuracy': float(accuracy_score(y_val_arr, preds)),
+            'macro_f1': float(f1_score(y_val_arr, preds, average='macro', zero_division=0)),
+            'report': classification_report(y_val_arr, preds, target_names=[ID_TO_LABEL[i] for i in range(3)], output_dict=True, zero_division=0),
+            'confusion_matrix': confusion_matrix(y_val_arr, preds, labels=[0, 1, 2]).tolist(),
+            'targets': y_val_arr.tolist(),
+            'preds': preds.tolist(),
+            'scores': cascade_scores.tolist(),
+        }
+        model = base_out['model']
+        model_name = f"Cascade({base_out['model_name']}->{fn_out['model_name']})"
+        best_epoch = int(base_out['best_epoch'])
+        history = base_out['history']
+        cascade_summary = {
+            'base_model_name': base_out['model_name'],
+            'fn_model_name': fn_out['model_name'],
+            'base_best_epoch': int(base_out['best_epoch']),
+            'fn_best_epoch': int(fn_out['best_epoch']),
+            'base_eval': base_out['eval'],
+            'fn_eval': fn_out['eval'],
+            'cascade_triggered': int(np.sum(cascade_mask)),
+        }
+    else:
+        single_out = _train_one_branch(
+            train_ds, val_loader, X_train, y_train, device, args,
+            model_arch=args.model_arch,
+            fn_boost=args.fn_class_weight_boost,
+            fn_priority_mode=args.fn_priority_mode,
+            fn_threshold=args.fn_threshold,
+            fn_margin=args.fn_margin
+        )
+        model = single_out['model']
+        model_name = single_out['model_name']
+        best_epoch = int(single_out['best_epoch'])
+        history = single_out['history']
+        final_eval = single_out['eval']
+    print(f"[hardcase-dl] eval best_epoch={best_epoch} val_acc={final_eval['accuracy']:.4f} val_f1={final_eval['macro_f1']:.4f}")
+    if args.enable_cascade:
+        print(f"[hardcase-dl] cascade_triggered={cascade_summary.get('cascade_triggered', 0)}")
+    print(f"[hardcase-dl] data_source={data_source}")
+    cm = final_eval.get('confusion_matrix', [[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    print(f"[hardcase-dl] confusion_matrix={cm}")
+    report = final_eval.get('report', {})
+    for cls_name in ['hard_samples', 'false_positives', 'false_negatives']:
+        cls = report.get(cls_name, {})
+        p = float(cls.get('precision', 0.0))
+        r = float(cls.get('recall', 0.0))
+        f1 = float(cls.get('f1-score', 0.0))
+        s = int(cls.get('support', 0))
+        print(f"[hardcase-dl] class={cls_name} precision={p:.4f} recall={r:.4f} f1={f1:.4f} support={s}")
+    weights_dir = Path(RESOURCES_DIR) / 'weights'
+    eval_dir = Path(RESOURCES_DIR) / 'eval'
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    plot_paths = _save_eval_figures(final_eval, eval_dir)
+    print(f"[hardcase-dl] confusion matrix plot saved: {plot_paths.get('multiclass_confusion_matrix_path')}")
+    for k, p in (plot_paths.get('binary_confusion_matrices') or {}).items():
+        print(f"[hardcase-dl] binary confusion matrix saved ({k}): {p}")
+    print(f"[hardcase-dl] roc auc plot saved: {plot_paths.get('roc_auc_path')}")
+    stability = _bootstrap_stability(final_eval, rounds=args.bootstrap_rounds, seed=args.seed)
+    print(f"[hardcase-dl] stability macro_f1={stability['macro_f1_mean']:.4f} p05={stability['macro_f1_p05']:.4f} p95={stability['macro_f1_p95']:.4f}")
+    model_path = weights_dir / 'hardcase_dl_model.pt'
+    payload = {
+        'model_state_dict': model.state_dict(),
+        'input_dim': int(X_train.shape[1]),
+        'num_classes': 3,
+        'label_to_id': LABEL_TO_ID,
+        'id_to_label': ID_TO_LABEL,
+        'scaler_mean': scaler.mean_.astype(np.float32),
+        'scaler_scale': scaler.scale_.astype(np.float32),
+        'selected_feature_indices': selected_idx.astype(np.int64),
+        'best_epoch': int(best_epoch),
+        'enable_cascade': bool(args.enable_cascade),
+    }
+    if args.enable_cascade:
+        base_model_path = weights_dir / 'hardcase_dl_base_model.pt'
+        fn_model_path = weights_dir / 'hardcase_dl_fn_model.pt'
+        torch.save({'model_state_dict': base_out['model'].state_dict(), 'model_name': base_out['model_name']}, base_model_path)
+        torch.save({'model_state_dict': fn_out['model'].state_dict(), 'model_name': fn_out['model_name']}, fn_model_path)
+        payload['cascade'] = {
+            'base_model_path': str(base_model_path),
+            'fn_model_path': str(fn_model_path),
+            'cascade_fn_threshold': float(args.cascade_fn_threshold),
+            'cascade_fn_margin': float(args.cascade_fn_margin),
+            'triggered': int(cascade_summary.get('cascade_triggered', 0)),
+        }
+    torch.save(payload, model_path)
+    metrics = {
+        'dataset': {
+            'data_source': data_source,
+            'total_samples': int(len(y)),
+            'train_samples': int(len(y_train)),
+            'val_samples': int(len(y_val)),
+            'class_counts': class_counts,
+        },
+        'architecture': {
+            'type': model_name,
+            'input_dim': int(X_train.shape[1]),
+            'hidden_dims': [512, 256, 128],
+            'dropout': float(args.dropout),
+            'selected_input_dim': int(X_train.shape[1]),
+            'selected_raw_feature_count': int(selected_idx.shape[0]),
+            'num_classes': 3,
+        },
+        'training': {
+            'epochs': int(args.epochs),
+            'best_epoch': int(best_epoch),
+            'lr': float(args.lr),
+            'batch_size': int(args.batch_size),
+            'weight_decay': float(args.weight_decay),
+            'label_smoothing': float(args.label_smoothing),
+            'focal_gamma': float(args.focal_gamma),
+            'hard_class_boost': float(args.hard_class_boost),
+            'use_weighted_sampler': bool(args.use_weighted_sampler),
+            'fn_priority_mode': bool(args.fn_priority_mode),
+            'fn_class_weight_boost': float(args.fn_class_weight_boost),
+            'fn_threshold': float(args.fn_threshold),
+            'fn_margin': float(args.fn_margin),
+            'enable_cascade': bool(args.enable_cascade),
+            'cascade_base_arch': str(args.cascade_base_arch),
+            'cascade_fn_arch': str(args.cascade_fn_arch),
+            'cascade_fn_threshold': float(args.cascade_fn_threshold),
+            'cascade_fn_margin': float(args.cascade_fn_margin),
+            'patience': int(args.patience),
+            'device': str(device),
+            'seed': int(args.seed),
+        },
+        'validation': final_eval,
+        'validation_stability': stability,
+        'history': history,
+        'cascade': cascade_summary if args.enable_cascade else {},
+        'model_path': str(model_path),
+        'plots': plot_paths,
+    }
+    metrics_path = eval_dir / 'hardcase_dl_metrics.json'
+    metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(f"[hardcase-dl] model saved: {model_path}")
+    print(f"[hardcase-dl] metrics saved: {metrics_path}")
+    return metrics
+
+def main(args):
+    return run_training(args)
 ''')
 
 _register_embedded("pretrain", r'''import os
@@ -7589,7 +8439,7 @@ from config.config import (
     AUTOML_METHOD_DEFAULT, AUTOML_TRIALS_DEFAULT, AUTOML_CV_FOLDS_DEFAULT, AUTOML_METRIC_DEFAULT,
     DETECTED_MALICIOUS_PATHS_REPORT_PATH
 )
-from utils.logging_utils import configure_logging, get_logger, redirect_print_to_logger, set_log_level
+from utils.logging_utils import configure_logging, get_logger, redirect_console_to_logger_allow_progress, redirect_print_to_logger, set_log_level
 
 def _serve_ipc_only() -> str:
     logger = get_logger('kolo')
@@ -7794,95 +8644,125 @@ def _export_train_all_sample_reports(logger):
     }
 
 def main():
-    log_level = os.environ.get('KVD_LOG_LEVEL', 'DEBUG')
+    log_level = os.environ.get('KVD_LOG_LEVEL', 'INFO')
     configure_logging(log_file_name='app.log', level=log_level)
     set_log_level(log_level)
     redirect_print_to_logger('kolo.print')
+    redirect_console_to_logger_allow_progress('kolo.console')
     logger = get_logger('kolo')
     logger.debug(f'进入主流程 argv={sys.argv}')
     parser = argparse.ArgumentParser(prog='KoloVirusDetector', description='KoloVirusDetector 项目入口')
     subs = parser.add_subparsers(dest='command', required=True)
 
-    sp_pretrain = subs.add_parser('pretrain', help='预训练LightGBM模型')
-    sp_pretrain.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
-    sp_pretrain.add_argument('--fast-dev-run', action='store_true', help=HELP_FAST_DEV_RUN)
-    sp_pretrain.add_argument('--save-features', action='store_true', help=HELP_SAVE_FEATURES)
-    sp_pretrain.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
-    sp_pretrain.add_argument('--incremental-training', action='store_true', help=HELP_INCREMENTAL_TRAINING)
-    sp_pretrain.add_argument('--incremental-data-dir', type=str, help=HELP_INCREMENTAL_DATA_DIR)
-    sp_pretrain.add_argument('--incremental-raw-data-dir', type=str, help=HELP_INCREMENTAL_RAW_DATA_DIR)
-    sp_pretrain.add_argument('--file-extensions', type=str, nargs='+', help=HELP_FILE_EXTENSIONS)
-    sp_pretrain.add_argument('--label-inference', type=str, default='filename', choices=['filename', 'directory'], help=HELP_LABEL_INFERENCE)
-    sp_pretrain.add_argument('--num-boost-round', type=int, default=DEFAULT_NUM_BOOST_ROUND, help=HELP_NUM_BOOST_ROUND)
-    sp_pretrain.add_argument('--incremental-rounds', type=int, default=DEFAULT_INCREMENTAL_ROUNDS, help=HELP_INCREMENTAL_ROUNDS)
-    sp_pretrain.add_argument('--incremental-early-stopping', type=int, default=DEFAULT_INCREMENTAL_EARLY_STOPPING, help=HELP_INCREMENTAL_EARLY_STOPPING)
-    sp_pretrain.add_argument('--max-finetune-iterations', type=int, default=DEFAULT_MAX_FINETUNE_ITERATIONS, help=HELP_MAX_FINETUNE_ITERATIONS)
-    sp_pretrain.add_argument('--use-existing-features', action='store_true', help=HELP_USE_EXISTING_FEATURES)
+    sp_pretrain = subs.add_parser('pretrain', help='预训练 LightGBM 模型')
+    sp_pretrain.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
+    sp_pretrain.add_argument('--fast-dev-run', action='store_true', help='快速开发模式，仅使用小规模样本进行流程验证')
+    sp_pretrain.add_argument('--save-features', action='store_true', help='保存本次提取的特征到特征文件')
+    sp_pretrain.add_argument('--finetune-on-false-positives', action='store_true', help='检测到假阳性后继续进行强化训练')
+    sp_pretrain.add_argument('--incremental-training', action='store_true', help='启用增量训练，基于已有模型继续训练')
+    sp_pretrain.add_argument('--incremental-data-dir', type=str, help='增量训练数据目录（.npz）')
+    sp_pretrain.add_argument('--incremental-raw-data-dir', type=str, help='增量训练原始文件目录（自动提取后再训练）')
+    sp_pretrain.add_argument('--file-extensions', type=str, nargs='+', help='仅处理指定后缀文件，例如 .exe .dll')
+    sp_pretrain.add_argument('--label-inference', type=str, default='filename', choices=['filename', 'directory'], help='标签推断方式：filename 按文件名，directory 按目录名')
+    sp_pretrain.add_argument('--num-boost-round', type=int, default=DEFAULT_NUM_BOOST_ROUND, help='预训练 boosting 轮数')
+    sp_pretrain.add_argument('--incremental-rounds', type=int, default=DEFAULT_INCREMENTAL_ROUNDS, help='增量训练轮数')
+    sp_pretrain.add_argument('--incremental-early-stopping', type=int, default=DEFAULT_INCREMENTAL_EARLY_STOPPING, help='增量训练早停轮数')
+    sp_pretrain.add_argument('--max-finetune-iterations', type=int, default=DEFAULT_MAX_FINETUNE_ITERATIONS, help='强化训练最大迭代次数')
+    sp_pretrain.add_argument('--use-existing-features', action='store_true', help='复用已有特征文件并跳过重新提取')
 
-    sp_finetune = subs.add_parser('finetune', help='HDBSCAN 家族发现与分类器训练')
-    sp_finetune.add_argument('--data-dir', type=str, default=PROCESSED_DATA_DIR, help=HELP_DATA_DIR)
-    sp_finetune.add_argument('--features-path', type=str, default=FEATURES_PKL_PATH, help=HELP_FEATURES_PATH)
-    sp_finetune.add_argument('--save-dir', type=str, default=HDBSCAN_SAVE_DIR, help=HELP_SAVE_DIR)
-    sp_finetune.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
-    sp_finetune.add_argument('--min-cluster-size', type=int, default=DEFAULT_MIN_CLUSTER_SIZE, help=HELP_MIN_CLUSTER_SIZE)
-    sp_finetune.add_argument('--min-samples', type=int, default=DEFAULT_MIN_SAMPLES, help=HELP_MIN_SAMPLES)
-    sp_finetune.add_argument('--min-family-size', type=int, default=DEFAULT_MIN_FAMILY_SIZE, help=HELP_MIN_FAMILY_SIZE)
-    sp_finetune.add_argument('--plot-pca', action='store_true', help=HELP_PLOT_PCA)
-    sp_finetune.add_argument('--explain-discrepancy', action='store_true', help=HELP_EXPLAIN_DISCREPANCY)
-    sp_finetune.add_argument('--treat-noise-as-family', action='store_true', default=DEFAULT_TREAT_NOISE_AS_FAMILY, help=HELP_TREAT_NOISE_AS_FAMILY)
+    sp_finetune = subs.add_parser('finetune', help='执行 HDBSCAN 家族发现与分类器训练')
+    sp_finetune.add_argument('--data-dir', type=str, default=PROCESSED_DATA_DIR, help='处理后数据目录（.npz + metadata）')
+    sp_finetune.add_argument('--features-path', type=str, default=FEATURES_PKL_PATH, help='已提取特征文件路径')
+    sp_finetune.add_argument('--save-dir', type=str, default=HDBSCAN_SAVE_DIR, help='聚类与模型输出目录')
+    sp_finetune.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
+    sp_finetune.add_argument('--min-cluster-size', type=int, default=DEFAULT_MIN_CLUSTER_SIZE, help='HDBSCAN 最小簇大小')
+    sp_finetune.add_argument('--min-samples', type=int, default=DEFAULT_MIN_SAMPLES, help='HDBSCAN 核心点最小样本数')
+    sp_finetune.add_argument('--min-family-size', type=int, default=DEFAULT_MIN_FAMILY_SIZE, help='家族最小样本数')
+    sp_finetune.add_argument('--plot-pca', action='store_true', help='输出 PCA 可视化图')
+    sp_finetune.add_argument('--explain-discrepancy', action='store_true', help='输出聚类差异解释信息')
+    sp_finetune.add_argument('--treat-noise-as-family', action='store_true', default=DEFAULT_TREAT_NOISE_AS_FAMILY, help='将噪声点作为独立家族处理')
     sp_finetune.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
 
-    sp_scan = subs.add_parser('scan', help='单次扫描或目录扫描')
-    sp_scan.add_argument('--lightgbm-model-path', type=str, default=MODEL_PATH, help=HELP_LIGHTGBM_MODEL_PATH)
-    sp_scan.add_argument('--family-classifier-path', type=str, default=FAMILY_CLASSIFIER_PATH, help=HELP_FAMILY_CLASSIFIER_PATH)
-    sp_scan.add_argument('--cache-file', type=str, default=SCAN_CACHE_PATH, help=HELP_CACHE_FILE)
-    sp_scan.add_argument('--file-path', type=str, help=HELP_FILE_PATH)
-    sp_scan.add_argument('--dir-path', type=str, help=HELP_DIR_PATH)
-    sp_scan.add_argument('--recursive', action='store_true', help=HELP_RECURSIVE)
-    sp_scan.add_argument('--output-path', type=str, default=SCAN_OUTPUT_DIR, help=HELP_OUTPUT_PATH)
-    sp_scan.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
+    sp_scan = subs.add_parser('scan', help='执行单文件或目录扫描')
+    sp_scan.add_argument('--lightgbm-model-path', type=str, default=MODEL_PATH, help='LightGBM 模型路径')
+    sp_scan.add_argument('--family-classifier-path', type=str, default=FAMILY_CLASSIFIER_PATH, help='家族分类器模型路径')
+    sp_scan.add_argument('--cache-file', type=str, default=SCAN_CACHE_PATH, help='扫描缓存文件路径')
+    sp_scan.add_argument('--file-path', type=str, help='待扫描的单文件路径')
+    sp_scan.add_argument('--dir-path', type=str, help='待扫描的目录路径')
+    sp_scan.add_argument('--recursive', action='store_true', help='递归扫描目录')
+    sp_scan.add_argument('--output-path', type=str, default=SCAN_OUTPUT_DIR, help='扫描结果输出目录')
+    sp_scan.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
 
-    sp_extract = subs.add_parser('extract', help='从默认样本目录提取并生成处理数据')
-    sp_extract.add_argument('--output-dir', type=str, default=PROCESSED_DATA_DIR, help=HELP_SAVE_DIR)
-    sp_extract.add_argument('--file-extensions', type=str, nargs='+', help=HELP_FILE_EXTENSIONS)
-    sp_extract.add_argument('--label-inference', type=str, default='directory', choices=['filename', 'directory'], help=HELP_LABEL_INFERENCE)
-    sp_extract.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
+    sp_extract = subs.add_parser('extract', help='从样本目录提取特征并生成处理数据')
+    sp_extract.add_argument('--output-dir', type=str, default=PROCESSED_DATA_DIR, help='提取结果输出目录')
+    sp_extract.add_argument('--file-extensions', type=str, nargs='+', help='仅处理指定后缀文件，例如 .exe .dll')
+    sp_extract.add_argument('--label-inference', type=str, default='directory', choices=['filename', 'directory'], help='标签推断方式：filename 按文件名，directory 按目录名')
+    sp_extract.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
+    sp_extract.add_argument('--max-workers', type=int, default=16, help='特征提取并发线程上限')
 
     subs.add_parser('serve', help='启动IPC扫描服务')
 
     sp_train_routing = subs.add_parser('train-routing', help='训练路由门控与专家模型系统')
-    sp_train_routing.add_argument('--use-existing-features', action='store_true', help=HELP_USE_EXISTING_FEATURES)
-    sp_train_routing.add_argument('--save-features', action='store_true', help=HELP_SAVE_FEATURES)
-    sp_train_routing.add_argument('--fast-dev-run', action='store_true', help=HELP_FAST_DEV_RUN)
-    sp_train_routing.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
-    sp_train_routing.add_argument('--incremental-training', action='store_true', help=HELP_INCREMENTAL_TRAINING)
-    sp_train_routing.add_argument('--incremental-data-dir', type=str, help=HELP_INCREMENTAL_DATA_DIR)
-    sp_train_routing.add_argument('--incremental-raw-data-dir', type=str, help=HELP_INCREMENTAL_RAW_DATA_DIR)
-    sp_train_routing.add_argument('--file-extensions', type=str, nargs='+', help=HELP_FILE_EXTENSIONS)
-    sp_train_routing.add_argument('--label-inference', type=str, default='filename', choices=['filename', 'directory'], help=HELP_LABEL_INFERENCE)
-    sp_train_routing.add_argument('--num-boost-round', type=int, default=DEFAULT_NUM_BOOST_ROUND, help=HELP_NUM_BOOST_ROUND)
-    sp_train_routing.add_argument('--incremental-rounds', type=int, default=DEFAULT_INCREMENTAL_ROUNDS, help=HELP_INCREMENTAL_ROUNDS)
-    sp_train_routing.add_argument('--incremental-early-stopping', type=int, default=DEFAULT_INCREMENTAL_EARLY_STOPPING, help=HELP_INCREMENTAL_EARLY_STOPPING)
-    sp_train_routing.add_argument('--max-finetune-iterations', type=int, default=DEFAULT_MAX_FINETUNE_ITERATIONS, help=HELP_MAX_FINETUNE_ITERATIONS)
-    sp_train_routing.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
+    sp_train_routing.add_argument('--use-existing-features', action='store_true', help='复用已有特征文件并跳过重新提取')
+    sp_train_routing.add_argument('--save-features', action='store_true', help='保存本次提取的特征到特征文件')
+    sp_train_routing.add_argument('--fast-dev-run', action='store_true', help='快速开发模式，仅使用小规模样本进行流程验证')
+    sp_train_routing.add_argument('--finetune-on-false-positives', action='store_true', help='检测到假阳性后继续进行强化训练')
+    sp_train_routing.add_argument('--incremental-training', action='store_true', help='启用增量训练，基于已有模型继续训练')
+    sp_train_routing.add_argument('--incremental-data-dir', type=str, help='增量训练数据目录（.npz）')
+    sp_train_routing.add_argument('--incremental-raw-data-dir', type=str, help='增量训练原始文件目录（自动提取后再训练）')
+    sp_train_routing.add_argument('--file-extensions', type=str, nargs='+', help='仅处理指定后缀文件，例如 .exe .dll')
+    sp_train_routing.add_argument('--label-inference', type=str, default='filename', choices=['filename', 'directory'], help='标签推断方式：filename 按文件名，directory 按目录名')
+    sp_train_routing.add_argument('--num-boost-round', type=int, default=DEFAULT_NUM_BOOST_ROUND, help='预训练 boosting 轮数')
+    sp_train_routing.add_argument('--incremental-rounds', type=int, default=DEFAULT_INCREMENTAL_ROUNDS, help='增量训练轮数')
+    sp_train_routing.add_argument('--incremental-early-stopping', type=int, default=DEFAULT_INCREMENTAL_EARLY_STOPPING, help='增量训练早停轮数')
+    sp_train_routing.add_argument('--max-finetune-iterations', type=int, default=DEFAULT_MAX_FINETUNE_ITERATIONS, help='强化训练最大迭代次数')
+    sp_train_routing.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
     
     sp_train_all = subs.add_parser('train-all', help='一键执行特征提取、模型训练、评估与聚类')
-    sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help=HELP_FINETUNE_ON_FALSE_POSITIVES)
-    sp_train_all.add_argument('--skip-tuning', action='store_true', help=HELP_SKIP_TUNING)
+    sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help='检测到假阳性后继续进行强化训练')
+    sp_train_all.add_argument('--skip-tuning', action='store_true', help='跳过 AutoML 超参调优阶段')
     sp_train_all.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
 
     sp_export_family_json = subs.add_parser('export-family-json', help='从 family_classifier.pkl 快速导出 family_classifier.json')
     sp_export_family_json.add_argument('--input', type=str, default=os.path.join(HDBSCAN_SAVE_DIR, 'family_classifier.pkl'))
     sp_export_family_json.add_argument('--output', type=str, default=os.path.join(HDBSCAN_SAVE_DIR, 'family_classifier.json'))
     
-    sp_autotune = subs.add_parser('auto-tune', help='AutoML超参调优与交叉测试对比')
-    sp_autotune.add_argument('--method', type=str, default=AUTOML_METHOD_DEFAULT, choices=['optuna', 'hyperopt'], help=HELP_AUTOML_METHOD)
-    sp_autotune.add_argument('--trials', type=int, default=AUTOML_TRIALS_DEFAULT, help=HELP_AUTOML_TRIALS)
-    sp_autotune.add_argument('--cv', type=int, default=AUTOML_CV_FOLDS_DEFAULT, help=HELP_AUTOML_CV)
-    sp_autotune.add_argument('--metric', type=str, default=AUTOML_METRIC_DEFAULT, choices=['roc_auc', 'accuracy', 'f1', 'precision', 'recall'], help=HELP_AUTOML_METRIC)
-    sp_autotune.add_argument('--use-existing-features', action='store_true', help=HELP_USE_EXISTING_FEATURES)
-    sp_autotune.add_argument('--fast-dev-run', action='store_true', help=HELP_AUTOML_FAST_DEV_RUN)
-    sp_autotune.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help=HELP_MAX_FILE_SIZE)
+    sp_autotune = subs.add_parser('auto-tune', help='执行 AutoML 超参调优并输出交叉验证对比')
+    sp_autotune.add_argument('--method', type=str, default=AUTOML_METHOD_DEFAULT, choices=['optuna', 'hyperopt'], help='超参调优方法，可选 optuna 或 hyperopt')
+    sp_autotune.add_argument('--trials', type=int, default=AUTOML_TRIALS_DEFAULT, help='超参搜索试验次数')
+    sp_autotune.add_argument('--cv', type=int, default=AUTOML_CV_FOLDS_DEFAULT, help='交叉验证折数')
+    sp_autotune.add_argument('--metric', type=str, default=AUTOML_METRIC_DEFAULT, choices=['roc_auc', 'accuracy', 'f1', 'precision', 'recall'], help='优化目标指标')
+    sp_autotune.add_argument('--use-existing-features', action='store_true', help='复用已有特征文件并跳过重新提取')
+    sp_autotune.add_argument('--fast-dev-run', action='store_true', help='快速开发模式，仅使用小规模样本进行流程验证')
+    sp_autotune.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
+
+    sp_train_hardcase_dl = subs.add_parser('train-hardcase-dl', help='训练困难样本/假阳性/假阴性专用深度学习模型')
+    sp_train_hardcase_dl.add_argument('--epochs', type=int, default=40, help='训练轮数')
+    sp_train_hardcase_dl.add_argument('--model-arch', type=str, default='resmlp', choices=['resmlp', 'mlp'], help='模型骨干架构')
+    sp_train_hardcase_dl.add_argument('--batch-size', type=int, default=128, help='批大小')
+    sp_train_hardcase_dl.add_argument('--lr', type=float, default=1e-3, help='学习率')
+    sp_train_hardcase_dl.add_argument('--dropout', type=float, default=0.25, help='Dropout 比例')
+    sp_train_hardcase_dl.add_argument('--weight-decay', type=float, default=1e-4, help='权重衰减')
+    sp_train_hardcase_dl.add_argument('--label-smoothing', type=float, default=0.03, help='标签平滑系数')
+    sp_train_hardcase_dl.add_argument('--focal-gamma', type=float, default=0.0, help='Focal Loss gamma')
+    sp_train_hardcase_dl.add_argument('--hard-class-boost', type=float, default=1.0, help='困难样本类别采样权重增强倍数')
+    sp_train_hardcase_dl.add_argument('--use-weighted-sampler', action='store_true', help='启用加权重采样训练')
+    sp_train_hardcase_dl.add_argument('--fn-priority-mode', action='store_true', help='启用原假阴性优先召回模式')
+    sp_train_hardcase_dl.add_argument('--fn-class-weight-boost', type=float, default=1.0, help='原假阴性类别损失权重增强倍数')
+    sp_train_hardcase_dl.add_argument('--fn-threshold', type=float, default=0.45, help='原假阴性后处理阈值')
+    sp_train_hardcase_dl.add_argument('--fn-margin', type=float, default=0.0, help='原假阴性后处理最小领先边际')
+    sp_train_hardcase_dl.add_argument('--enable-cascade', action='store_true', help='启用双模型级联')
+    sp_train_hardcase_dl.add_argument('--cascade-base-arch', type=str, default='mlp', choices=['resmlp', 'mlp'], help='级联基础模型架构')
+    sp_train_hardcase_dl.add_argument('--cascade-fn-arch', type=str, default='resmlp', choices=['resmlp', 'mlp'], help='级联FN模型架构')
+    sp_train_hardcase_dl.add_argument('--cascade-fn-threshold', type=float, default=0.35, help='级联时FN覆盖阈值')
+    sp_train_hardcase_dl.add_argument('--cascade-fn-margin', type=float, default=-0.02, help='级联时FN覆盖领先边际')
+    sp_train_hardcase_dl.add_argument('--patience', type=int, default=8, help='早停耐心轮数')
+    sp_train_hardcase_dl.add_argument('--bootstrap-rounds', type=int, default=300, help='稳定性评估bootstrap轮数')
+    sp_train_hardcase_dl.add_argument('--val-size', type=float, default=0.2, help='验证集比例')
+    sp_train_hardcase_dl.add_argument('--seed', type=int, default=42, help='随机种子')
+    sp_train_hardcase_dl.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'], help='训练设备')
+    sp_train_hardcase_dl.add_argument('--max-input-dim', type=int, default=384, help='筛选后的最大输入特征维数')
+    sp_train_hardcase_dl.add_argument('--max-samples-per-class', type=int, default=0, help='每类样本上限，0 表示不限制')
 
     args = parser.parse_args()
 
@@ -7938,7 +8818,7 @@ def main():
             all_labels = []
             for src in sources:
                 file_names, labels = extract_features_from_raw_files(
-                    src, args.output_dir, args.max_file_size, args.file_extensions, args.label_inference
+                    src, args.output_dir, args.max_file_size, args.file_extensions, args.label_inference, args.max_workers
                 )
                 all_files.extend(file_names)
                 all_labels.extend(labels)
@@ -7964,6 +8844,13 @@ def main():
             train_routing.main(args)
         except Exception as e:
             logger.error(f'路由系统训练失败: {e}')
+            raise
+    elif args.command == 'train-hardcase-dl':
+        from training import hardcase_dl
+        try:
+            hardcase_dl.main(args)
+        except Exception as e:
+            logger.error(f'困难样本深度学习训练失败: {e}')
             raise
     elif args.command == 'train-all':
         import pretrain
