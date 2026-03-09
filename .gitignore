@@ -62,3 +62,4 @@ hard_samples_analysis
 feature_scaler.pkl
 logs
 attention_benchmark
+weights

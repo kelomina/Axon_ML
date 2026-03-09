@@ -4591,6 +4591,7 @@ _register_embedded("training.hardcase_dl", r'''import os
 import json
 import random
 import re
+import pickle
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -4603,6 +4604,9 @@ from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, label_binarize
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix, roc_curve, auc
+from sklearn.multiclass import OneVsRestClassifier
+import lightgbm as lgb
+import xgboost as xgb
 from config.config import HDBSCAN_SAVE_DIR, RESOURCES_DIR, FEATURES_PKL_PATH
 
 LABEL_TO_ID = {'hard_samples': 0, 'false_positives': 1, 'false_negatives': 2}
@@ -5098,91 +5102,65 @@ def run_training(args):
     unique_cls = np.unique(y)
     if len(unique_cls) < 3:
         raise RuntimeError('三类样本不完整，至少需要 hard_samples/false_positives/false_negatives 三类')
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=args.val_size, random_state=args.seed, stratify=y
-    )
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=args.val_size, random_state=args.seed, stratify=y)
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train).astype(np.float32)
     X_val = scaler.transform(X_val).astype(np.float32)
     X_train, X_val, selected_idx = _select_dense_features(X_train, X_val, max_input_dim=args.max_input_dim, extra_stat_dim=6)
-    train_ds = TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train))
-    val_ds = TensorDataset(torch.from_numpy(X_val), torch.from_numpy(y_val))
-    val_loader = DataLoader(val_ds, batch_size=max(64, args.batch_size))
-    device = torch.device(args.device if args.device in ['cpu', 'cuda'] else ('cuda' if torch.cuda.is_available() else 'cpu'))
-    cascade_summary = {}
-    if args.enable_cascade:
-        base_out = _train_one_branch(
-            train_ds, val_loader, X_train, y_train, device, args,
-            model_arch=args.cascade_base_arch,
-            fn_boost=1.0,
-            fn_priority_mode=False,
-            fn_threshold=args.fn_threshold,
-            fn_margin=args.fn_margin
+    lgb_ovr = OneVsRestClassifier(
+        lgb.LGBMClassifier(
+            objective='binary',
+            n_estimators=int(args.gbdt_estimators),
+            learning_rate=float(args.gbdt_learning_rate),
+            num_leaves=int(args.gbdt_num_leaves),
+            subsample=float(args.gbdt_subsample),
+            colsample_bytree=float(args.gbdt_colsample_bytree),
+            random_state=args.seed,
+            verbose=-1,
         )
-        fn_out = _train_one_branch(
-            train_ds, val_loader, X_train, y_train, device, args,
-            model_arch=args.cascade_fn_arch,
-            fn_boost=args.fn_class_weight_boost,
-            fn_priority_mode=True,
-            fn_threshold=args.fn_threshold,
-            fn_margin=args.fn_margin
+    )
+    xgb_ovr = OneVsRestClassifier(
+        xgb.XGBClassifier(
+            objective='binary:logistic',
+            n_estimators=int(args.gbdt_estimators),
+            learning_rate=float(args.gbdt_learning_rate),
+            max_depth=int(args.gbdt_max_depth),
+            subsample=float(args.gbdt_subsample),
+            colsample_bytree=float(args.gbdt_colsample_bytree),
+            reg_lambda=1.0,
+            random_state=args.seed,
+            eval_metric='logloss',
+            n_jobs=4,
         )
-        base_scores = np.asarray(base_out['eval']['scores'], dtype=np.float32)
-        fn_scores = np.asarray(fn_out['eval']['scores'], dtype=np.float32)
-        fn_idx = int(LABEL_TO_ID['false_negatives'])
-        other = np.delete(fn_scores, fn_idx, axis=1)
-        other_max = np.max(other, axis=1)
-        fn_prob = fn_scores[:, fn_idx]
-        cascade_mask = (fn_prob >= float(args.cascade_fn_threshold)) & ((fn_prob - other_max) >= float(args.cascade_fn_margin))
-        cascade_scores = base_scores.copy()
-        cascade_scores[:, fn_idx] = np.maximum(cascade_scores[:, fn_idx], fn_prob)
-        denom = np.sum(cascade_scores, axis=1, keepdims=True)
-        denom[denom <= 1e-12] = 1.0
-        cascade_scores = cascade_scores / denom
-        cascade_args = _make_decision_args(fn_priority_mode=False, fn_threshold=args.fn_threshold, fn_margin=args.fn_margin)
-        raw_eval = _evaluate_from_scores(y_val, cascade_scores, args=cascade_args)
-        preds = np.asarray(raw_eval['preds'], dtype=np.int64)
-        preds[cascade_mask] = fn_idx
-        y_val_arr = np.asarray(y_val, dtype=np.int64)
-        final_eval = {
-            'accuracy': float(accuracy_score(y_val_arr, preds)),
-            'macro_f1': float(f1_score(y_val_arr, preds, average='macro', zero_division=0)),
-            'report': classification_report(y_val_arr, preds, target_names=[ID_TO_LABEL[i] for i in range(3)], output_dict=True, zero_division=0),
-            'confusion_matrix': confusion_matrix(y_val_arr, preds, labels=[0, 1, 2]).tolist(),
-            'targets': y_val_arr.tolist(),
-            'preds': preds.tolist(),
-            'scores': cascade_scores.tolist(),
-        }
-        model = base_out['model']
-        model_name = f"Cascade({base_out['model_name']}->{fn_out['model_name']})"
-        best_epoch = int(base_out['best_epoch'])
-        history = base_out['history']
-        cascade_summary = {
-            'base_model_name': base_out['model_name'],
-            'fn_model_name': fn_out['model_name'],
-            'base_best_epoch': int(base_out['best_epoch']),
-            'fn_best_epoch': int(fn_out['best_epoch']),
-            'base_eval': base_out['eval'],
-            'fn_eval': fn_out['eval'],
-            'cascade_triggered': int(np.sum(cascade_mask)),
-        }
-    else:
-        single_out = _train_one_branch(
-            train_ds, val_loader, X_train, y_train, device, args,
-            model_arch=args.model_arch,
-            fn_boost=args.fn_class_weight_boost,
-            fn_priority_mode=args.fn_priority_mode,
-            fn_threshold=args.fn_threshold,
-            fn_margin=args.fn_margin
-        )
-        model = single_out['model']
-        model_name = single_out['model_name']
-        best_epoch = int(single_out['best_epoch'])
-        history = single_out['history']
-        final_eval = single_out['eval']
+    )
+    lgb_ovr.fit(X_train, y_train)
+    xgb_ovr.fit(X_train, y_train)
+    lgb_scores = np.asarray(lgb_ovr.predict_proba(X_val), dtype=np.float32)
+    xgb_scores = np.asarray(xgb_ovr.predict_proba(X_val), dtype=np.float32)
+    score_array = (lgb_scores + xgb_scores) / 2.0
+    fn_idx = int(LABEL_TO_ID['false_negatives'])
+    other = np.delete(score_array, fn_idx, axis=1)
+    other_max = np.max(other, axis=1)
+    fn_prob = score_array[:, fn_idx]
+    cascade_mask = (fn_prob >= float(args.cascade_fn_threshold)) & ((fn_prob - other_max) >= float(args.cascade_fn_margin))
+    preds = np.argmax(score_array, axis=1).astype(np.int64)
+    preds[cascade_mask] = fn_idx
+    y_val_arr = np.asarray(y_val, dtype=np.int64)
+    final_eval = {
+        'accuracy': float(accuracy_score(y_val_arr, preds)),
+        'macro_f1': float(f1_score(y_val_arr, preds, average='macro', zero_division=0)),
+        'report': classification_report(y_val_arr, preds, target_names=[ID_TO_LABEL[i] for i in range(3)], output_dict=True, zero_division=0),
+        'confusion_matrix': confusion_matrix(y_val_arr, preds, labels=[0, 1, 2]).tolist(),
+        'targets': y_val_arr.tolist(),
+        'preds': preds.tolist(),
+        'scores': score_array.tolist(),
+    }
+    model_name = 'PlanA(OneVsRest LightGBM+XGBoost)'
+    best_epoch = int(args.gbdt_estimators)
+    history = []
+    cascade_summary = {'cascade_triggered': int(np.sum(cascade_mask))}
     print(f"[hardcase-dl] eval best_epoch={best_epoch} val_acc={final_eval['accuracy']:.4f} val_f1={final_eval['macro_f1']:.4f}")
-    if args.enable_cascade:
-        print(f"[hardcase-dl] cascade_triggered={cascade_summary.get('cascade_triggered', 0)}")
+    print(f"[hardcase-dl] cascade_triggered={cascade_summary.get('cascade_triggered', 0)}")
     print(f"[hardcase-dl] data_source={data_source}")
     cm = final_eval.get('confusion_matrix', [[0, 0, 0], [0, 0, 0], [0, 0, 0]])
     print(f"[hardcase-dl] confusion_matrix={cm}")
@@ -5205,9 +5183,11 @@ def run_training(args):
     print(f"[hardcase-dl] roc auc plot saved: {plot_paths.get('roc_auc_path')}")
     stability = _bootstrap_stability(final_eval, rounds=args.bootstrap_rounds, seed=args.seed)
     print(f"[hardcase-dl] stability macro_f1={stability['macro_f1_mean']:.4f} p05={stability['macro_f1_p05']:.4f} p95={stability['macro_f1_p95']:.4f}")
-    model_path = weights_dir / 'hardcase_dl_model.pt'
+    model_path = weights_dir / 'hardcase_dl_model.pkl'
     payload = {
-        'model_state_dict': model.state_dict(),
+        'model_family': 'plan_a_gbdt_ovr',
+        'lgb_ovr': lgb_ovr,
+        'xgb_ovr': xgb_ovr,
         'input_dim': int(X_train.shape[1]),
         'num_classes': 3,
         'label_to_id': LABEL_TO_ID,
@@ -5216,21 +5196,12 @@ def run_training(args):
         'scaler_scale': scaler.scale_.astype(np.float32),
         'selected_feature_indices': selected_idx.astype(np.int64),
         'best_epoch': int(best_epoch),
-        'enable_cascade': bool(args.enable_cascade),
+        'cascade_fn_threshold': float(args.cascade_fn_threshold),
+        'cascade_fn_margin': float(args.cascade_fn_margin),
+        'cascade_triggered': int(cascade_summary.get('cascade_triggered', 0)),
     }
-    if args.enable_cascade:
-        base_model_path = weights_dir / 'hardcase_dl_base_model.pt'
-        fn_model_path = weights_dir / 'hardcase_dl_fn_model.pt'
-        torch.save({'model_state_dict': base_out['model'].state_dict(), 'model_name': base_out['model_name']}, base_model_path)
-        torch.save({'model_state_dict': fn_out['model'].state_dict(), 'model_name': fn_out['model_name']}, fn_model_path)
-        payload['cascade'] = {
-            'base_model_path': str(base_model_path),
-            'fn_model_path': str(fn_model_path),
-            'cascade_fn_threshold': float(args.cascade_fn_threshold),
-            'cascade_fn_margin': float(args.cascade_fn_margin),
-            'triggered': int(cascade_summary.get('cascade_triggered', 0)),
-        }
-    torch.save(payload, model_path)
+    with open(model_path, 'wb') as f:
+        pickle.dump(payload, f)
     metrics = {
         'dataset': {
             'data_source': data_source,
@@ -5242,39 +5213,44 @@ def run_training(args):
         'architecture': {
             'type': model_name,
             'input_dim': int(X_train.shape[1]),
-            'hidden_dims': [512, 256, 128],
-            'dropout': float(args.dropout),
+            'hidden_dims': [],
+            'dropout': 0.0,
             'selected_input_dim': int(X_train.shape[1]),
             'selected_raw_feature_count': int(selected_idx.shape[0]),
             'num_classes': 3,
         },
         'training': {
-            'epochs': int(args.epochs),
+            'epochs': int(args.gbdt_estimators),
             'best_epoch': int(best_epoch),
-            'lr': float(args.lr),
-            'batch_size': int(args.batch_size),
-            'weight_decay': float(args.weight_decay),
-            'label_smoothing': float(args.label_smoothing),
-            'focal_gamma': float(args.focal_gamma),
-            'hard_class_boost': float(args.hard_class_boost),
-            'use_weighted_sampler': bool(args.use_weighted_sampler),
-            'fn_priority_mode': bool(args.fn_priority_mode),
-            'fn_class_weight_boost': float(args.fn_class_weight_boost),
-            'fn_threshold': float(args.fn_threshold),
-            'fn_margin': float(args.fn_margin),
-            'enable_cascade': bool(args.enable_cascade),
-            'cascade_base_arch': str(args.cascade_base_arch),
-            'cascade_fn_arch': str(args.cascade_fn_arch),
+            'lr': float(args.gbdt_learning_rate),
+            'batch_size': 0,
+            'weight_decay': 0.0,
+            'label_smoothing': 0.0,
+            'focal_gamma': 0.0,
+            'hard_class_boost': 1.0,
+            'use_weighted_sampler': False,
+            'fn_priority_mode': False,
+            'fn_class_weight_boost': 1.0,
+            'fn_threshold': 0.0,
+            'fn_margin': 0.0,
+            'enable_cascade': True,
+            'cascade_base_arch': 'lightgbm',
+            'cascade_fn_arch': 'xgboost',
             'cascade_fn_threshold': float(args.cascade_fn_threshold),
             'cascade_fn_margin': float(args.cascade_fn_margin),
-            'patience': int(args.patience),
-            'device': str(device),
+            'patience': 0,
+            'device': 'cpu',
             'seed': int(args.seed),
+            'gbdt_estimators': int(args.gbdt_estimators),
+            'gbdt_num_leaves': int(args.gbdt_num_leaves),
+            'gbdt_max_depth': int(args.gbdt_max_depth),
+            'gbdt_subsample': float(args.gbdt_subsample),
+            'gbdt_colsample_bytree': float(args.gbdt_colsample_bytree),
         },
         'validation': final_eval,
         'validation_stability': stability,
         'history': history,
-        'cascade': cascade_summary if args.enable_cascade else {},
+        'cascade': cascade_summary,
         'model_path': str(model_path),
         'plots': plot_paths,
     }
@@ -8722,6 +8698,19 @@ def main():
     sp_train_all.add_argument('--finetune-on-false-positives', action='store_true', help='检测到假阳性后继续进行强化训练')
     sp_train_all.add_argument('--skip-tuning', action='store_true', help='跳过 AutoML 超参调优阶段')
     sp_train_all.add_argument('--skip-cluster-quality-eval', action='store_true', help='跳过聚类质量评估')
+    sp_train_all.add_argument('--hardcase-gbdt-estimators', type=int, default=260, help='hardcase GBDT树数量')
+    sp_train_all.add_argument('--hardcase-gbdt-learning-rate', type=float, default=0.05, help='hardcase GBDT学习率')
+    sp_train_all.add_argument('--hardcase-gbdt-num-leaves', type=int, default=63, help='hardcase LightGBM叶子节点数')
+    sp_train_all.add_argument('--hardcase-gbdt-max-depth', type=int, default=6, help='hardcase XGBoost最大深度')
+    sp_train_all.add_argument('--hardcase-gbdt-subsample', type=float, default=0.9, help='hardcase 子采样比例')
+    sp_train_all.add_argument('--hardcase-gbdt-colsample-bytree', type=float, default=0.9, help='hardcase 列采样比例')
+    sp_train_all.add_argument('--hardcase-cascade-fn-threshold', type=float, default=0.35, help='hardcase 级联FN覆盖阈值')
+    sp_train_all.add_argument('--hardcase-cascade-fn-margin', type=float, default=-0.02, help='hardcase 级联FN覆盖领先边际')
+    sp_train_all.add_argument('--hardcase-bootstrap-rounds', type=int, default=300, help='hardcase 稳定性评估bootstrap轮数')
+    sp_train_all.add_argument('--hardcase-val-size', type=float, default=0.2, help='hardcase 验证集比例')
+    sp_train_all.add_argument('--hardcase-seed', type=int, default=42, help='hardcase 随机种子')
+    sp_train_all.add_argument('--hardcase-max-input-dim', type=int, default=384, help='hardcase 筛选后的最大输入特征维数')
+    sp_train_all.add_argument('--hardcase-max-samples-per-class', type=int, default=0, help='hardcase 每类样本上限，0 表示不限制')
 
     sp_export_family_json = subs.add_parser('export-family-json', help='从 family_classifier.pkl 快速导出 family_classifier.json')
     sp_export_family_json.add_argument('--input', type=str, default=os.path.join(HDBSCAN_SAVE_DIR, 'family_classifier.pkl'))
@@ -8736,31 +8725,18 @@ def main():
     sp_autotune.add_argument('--fast-dev-run', action='store_true', help='快速开发模式，仅使用小规模样本进行流程验证')
     sp_autotune.add_argument('--max-file-size', type=int, default=DEFAULT_MAX_FILE_SIZE, help='单个样本允许处理的最大字节数')
 
-    sp_train_hardcase_dl = subs.add_parser('train-hardcase-dl', help='训练困难样本/假阳性/假阴性专用深度学习模型')
-    sp_train_hardcase_dl.add_argument('--epochs', type=int, default=40, help='训练轮数')
-    sp_train_hardcase_dl.add_argument('--model-arch', type=str, default='resmlp', choices=['resmlp', 'mlp'], help='模型骨干架构')
-    sp_train_hardcase_dl.add_argument('--batch-size', type=int, default=128, help='批大小')
-    sp_train_hardcase_dl.add_argument('--lr', type=float, default=1e-3, help='学习率')
-    sp_train_hardcase_dl.add_argument('--dropout', type=float, default=0.25, help='Dropout 比例')
-    sp_train_hardcase_dl.add_argument('--weight-decay', type=float, default=1e-4, help='权重衰减')
-    sp_train_hardcase_dl.add_argument('--label-smoothing', type=float, default=0.03, help='标签平滑系数')
-    sp_train_hardcase_dl.add_argument('--focal-gamma', type=float, default=0.0, help='Focal Loss gamma')
-    sp_train_hardcase_dl.add_argument('--hard-class-boost', type=float, default=1.0, help='困难样本类别采样权重增强倍数')
-    sp_train_hardcase_dl.add_argument('--use-weighted-sampler', action='store_true', help='启用加权重采样训练')
-    sp_train_hardcase_dl.add_argument('--fn-priority-mode', action='store_true', help='启用原假阴性优先召回模式')
-    sp_train_hardcase_dl.add_argument('--fn-class-weight-boost', type=float, default=1.0, help='原假阴性类别损失权重增强倍数')
-    sp_train_hardcase_dl.add_argument('--fn-threshold', type=float, default=0.45, help='原假阴性后处理阈值')
-    sp_train_hardcase_dl.add_argument('--fn-margin', type=float, default=0.0, help='原假阴性后处理最小领先边际')
-    sp_train_hardcase_dl.add_argument('--enable-cascade', action='store_true', help='启用双模型级联')
-    sp_train_hardcase_dl.add_argument('--cascade-base-arch', type=str, default='mlp', choices=['resmlp', 'mlp'], help='级联基础模型架构')
-    sp_train_hardcase_dl.add_argument('--cascade-fn-arch', type=str, default='resmlp', choices=['resmlp', 'mlp'], help='级联FN模型架构')
+    sp_train_hardcase_dl = subs.add_parser('train-hardcase-dl', help='训练困难样本/假阳性/假阴性专用GBDT级联模型')
+    sp_train_hardcase_dl.add_argument('--gbdt-estimators', type=int, default=260, help='GBDT树数量')
+    sp_train_hardcase_dl.add_argument('--gbdt-learning-rate', type=float, default=0.05, help='GBDT学习率')
+    sp_train_hardcase_dl.add_argument('--gbdt-num-leaves', type=int, default=63, help='LightGBM叶子节点数')
+    sp_train_hardcase_dl.add_argument('--gbdt-max-depth', type=int, default=6, help='XGBoost最大深度')
+    sp_train_hardcase_dl.add_argument('--gbdt-subsample', type=float, default=0.9, help='子采样比例')
+    sp_train_hardcase_dl.add_argument('--gbdt-colsample-bytree', type=float, default=0.9, help='列采样比例')
     sp_train_hardcase_dl.add_argument('--cascade-fn-threshold', type=float, default=0.35, help='级联时FN覆盖阈值')
     sp_train_hardcase_dl.add_argument('--cascade-fn-margin', type=float, default=-0.02, help='级联时FN覆盖领先边际')
-    sp_train_hardcase_dl.add_argument('--patience', type=int, default=8, help='早停耐心轮数')
     sp_train_hardcase_dl.add_argument('--bootstrap-rounds', type=int, default=300, help='稳定性评估bootstrap轮数')
     sp_train_hardcase_dl.add_argument('--val-size', type=float, default=0.2, help='验证集比例')
     sp_train_hardcase_dl.add_argument('--seed', type=int, default=42, help='随机种子')
-    sp_train_hardcase_dl.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'], help='训练设备')
     sp_train_hardcase_dl.add_argument('--max-input-dim', type=int, default=384, help='筛选后的最大输入特征维数')
     sp_train_hardcase_dl.add_argument('--max-samples-per-class', type=int, default=0, help='每类样本上限，0 表示不限制')
 
@@ -8855,6 +8831,7 @@ def main():
     elif args.command == 'train-all':
         import pretrain
         from training import train_routing
+        from training import hardcase_dl
         import finetune
         try:
             if not os.path.exists(METADATA_FILE):
@@ -8930,6 +8907,22 @@ def main():
                         override_params=override_params
                     )
                     pretrain.main(pre_args2)
+            hardcase_args = argparse.Namespace(
+                gbdt_estimators=args.hardcase_gbdt_estimators,
+                gbdt_learning_rate=args.hardcase_gbdt_learning_rate,
+                gbdt_num_leaves=args.hardcase_gbdt_num_leaves,
+                gbdt_max_depth=args.hardcase_gbdt_max_depth,
+                gbdt_subsample=args.hardcase_gbdt_subsample,
+                gbdt_colsample_bytree=args.hardcase_gbdt_colsample_bytree,
+                cascade_fn_threshold=args.hardcase_cascade_fn_threshold,
+                cascade_fn_margin=args.hardcase_cascade_fn_margin,
+                bootstrap_rounds=args.hardcase_bootstrap_rounds,
+                val_size=args.hardcase_val_size,
+                seed=args.hardcase_seed,
+                max_input_dim=args.hardcase_max_input_dim,
+                max_samples_per_class=args.hardcase_max_samples_per_class
+            )
+            hardcase_dl.main(hardcase_args)
             routing_args = argparse.Namespace(
                 use_existing_features=True,
                 save_features=False,
