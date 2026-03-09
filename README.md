@@ -90,12 +90,53 @@ python src/python/kvd_detector/main.py train-all
 python src/python/kvd_detector/main.py serve
 ```
 
+### 6. 权重统一转换为 ONNX（推荐部署前执行）
+```bash
+python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resources/weights_cluster_eval/weights
+```
+
 ## 配置说明
 
 核心配置位于 `src/python/kvd_detector/main.py` 的 `config.config` 模块中，包括：
 - **路径配置**：`PROJECT_ROOT`, `RESOURCES_DIR`, `PROCESSED_DATA_DIR` 等。
 - **训练参数**：`DEFAULT_NUM_BOOST_ROUND`, `DEFAULT_MAX_FILE_SIZE` (默认 64KB)。
 - **聚类参数**：`DEFAULT_MIN_CLUSTER_SIZE`, `DEFAULT_MIN_SAMPLES`。
+
+## 权重格式与 ONNX 优先部署
+
+### 1. 部署建议
+- 建议将 `resources/weights_cluster_eval/weights/` 下的部署权重统一准备为 `.onnx`，便于跨语言部署与环境统一。
+- 当前仓库已提供批量转换命令 `convert-weights-onnx`，会自动生成转换报告与 ONNX 清单。
+- 生产环境推荐将 `.onnx` 作为主交付格式，同时保留训练原始权重作为回溯与再训练资产。
+
+### 2. ONNX 转换命令
+```bash
+python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resources/weights_cluster_eval/weights
+```
+
+### 3. 转换产物
+- 典型 ONNX 产物包括：
+  - `lightgbm_model.onnx`
+  - `lightgbm_model_normal.onnx`
+  - `lightgbm_model_packed.onnx`
+  - `hardcase_lgb_ovr_class_0.onnx` ~ `hardcase_lgb_ovr_class_2.onnx`
+  - `hardcase_xgb_ovr_class_0.onnx` ~ `hardcase_xgb_ovr_class_2.onnx`
+  - `feature_scaler.onnx`
+  - `expert_normal_attention.onnx`
+  - `expert_packed_attention.onnx`
+  - `nn_expert_normal.onnx`
+  - `nn_expert_packed.onnx`
+  - `hardcase_dl_base_model.onnx`
+  - `hardcase_dl_model.onnx`
+  - `hardcase_dl_fn_model.onnx`
+- 转换过程会额外生成：
+  - `weights_onnx_manifest.json`（ONNX 清单）
+  - `weights_onnx_conversion_report.json`（转换报告，含 converted/skipped/failed）
+
+### 4. 与扫描流程的关系
+- C++ `kvd_core` 扫描链路当前仍直接加载 LightGBM 文本模型与 hardcase C++ manifest。
+- Python `scan` 命令当前默认使用 `lightgbm_model.txt` 与家族分类器路径。
+- ONNX 优先部署用于统一交付与引擎适配，若接入 ONNX Runtime 服务侧可直接消费上述 ONNX 产物与 manifest。
 
 ## DLL 扫描引擎调用文档
 
@@ -134,6 +175,7 @@ python src/python/kvd_detector/main.py serve
 | model_normal_path | const char* | normal 路由模型路径 |
 | model_packed_path | const char* | packed 路由模型路径 |
 | family_classifier_json_path | const char* | 家族分类器 JSON 路径 |
+| hardcase_manifest_path | const char* | hardcase C++ manifest 路径（可选） |
 | allowed_scan_root | const char* | 允许扫描的根目录 |
 | max_file_size | unsigned int | 最大读取文件大小 |
 | prediction_threshold | float | 恶意判定阈值 |
@@ -153,6 +195,10 @@ python src/python/kvd_detector/main.py serve
 | -16 | packed 模型无效 |
 | -17 | 家族分类器缺失 |
 | -18 | 家族分类器无效 |
+| -19 | hardcase manifest 缺失 |
+| -20 | hardcase manifest 无效 |
+| -21 | hardcase 子模型缺失 |
+| -22 | hardcase 子模型无效 |
 | -100 | 内存分配失败 |
 
 扫描结果 JSON 典型字段：
@@ -163,6 +209,9 @@ python src/python/kvd_detector/main.py serve
   "confidence": 0.98,
   "axon_malware": true,
   "axon_score": 0.96,
+  "hardcase_triggered": false,
+  "hardcase_class": "hard_samples",
+  "hardcase_scores": [0.71, 0.18, 0.11],
   "signature_hit": false,
   "signature_score": 0.0,
   "signature_reason": "",
@@ -202,7 +251,8 @@ int main() {
   cfg.model_path = "resources/weights_cluster_eval/weights/lightgbm_model.txt";
   cfg.model_normal_path = "resources/weights_cluster_eval/weights/lightgbm_model_normal.txt";
   cfg.model_packed_path = "resources/weights_cluster_eval/weights/lightgbm_model_packed.txt";
-  cfg.family_classifier_json_path = "hdbscan_cluster_results/family_classifier.json";
+  cfg.family_classifier_json_path = "resources/weights_cluster_eval/cluster/family_classifier.json";
+  cfg.hardcase_manifest_path = "resources/weights_cluster_eval/weights/hardcase_cxx_manifest.json";
   cfg.prediction_threshold = 0.5f;
   cfg.max_file_size = 65536;
 
@@ -235,6 +285,7 @@ class KvdConfig(ctypes.Structure):
         ("model_normal_path", ctypes.c_char_p),
         ("model_packed_path", ctypes.c_char_p),
         ("family_classifier_json_path", ctypes.c_char_p),
+        ("hardcase_manifest_path", ctypes.c_char_p),
         ("allowed_scan_root", ctypes.c_char_p),
         ("max_file_size", ctypes.c_uint),
         ("prediction_threshold", ctypes.c_float),
@@ -252,7 +303,8 @@ cfg = KvdConfig(
     model_path=b"resources/weights_cluster_eval/weights/lightgbm_model.txt",
     model_normal_path=b"resources/weights_cluster_eval/weights/lightgbm_model_normal.txt",
     model_packed_path=b"resources/weights_cluster_eval/weights/lightgbm_model_packed.txt",
-    family_classifier_json_path=b"hdbscan_cluster_results/family_classifier.json",
+    family_classifier_json_path=b"resources/weights_cluster_eval/cluster/family_classifier.json",
+    hardcase_manifest_path=b"resources/weights_cluster_eval/weights/hardcase_cxx_manifest.json",
     allowed_scan_root=None,
     max_file_size=65536,
     prediction_threshold=0.5,
@@ -300,6 +352,7 @@ const KvdConfig = Struct({
   model_normal_path: charPtr,
   model_packed_path: charPtr,
   family_classifier_json_path: charPtr,
+  hardcase_manifest_path: charPtr,
   allowed_scan_root: charPtr,
   max_file_size: ref.types.uint,
   prediction_threshold: ref.types.float
@@ -316,7 +369,8 @@ const cfg = new KvdConfig({
   model_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model.txt\0'),
   model_normal_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_normal.txt\0'),
   model_packed_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_packed.txt\0'),
-  family_classifier_json_path: Buffer.from('hdbscan_cluster_results/family_classifier.json\0'),
+  family_classifier_json_path: Buffer.from('resources/weights_cluster_eval/cluster/family_classifier.json\0'),
+  hardcase_manifest_path: Buffer.from('resources/weights_cluster_eval/weights/hardcase_cxx_manifest.json\0'),
   allowed_scan_root: ref.NULL,
   max_file_size: 65536,
   prediction_threshold: 0.5

@@ -8622,6 +8622,7 @@ _install_embedded_importer()
 
 from config.config import (
     MODEL_PATH, FAMILY_CLASSIFIER_PATH, FEATURES_PKL_PATH, PROCESSED_DATA_DIR, METADATA_FILE,
+    SAVED_MODEL_DIR,
     BENIGN_SAMPLES_DIR, MALICIOUS_SAMPLES_DIR,
     DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS,
     DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS,
@@ -8846,6 +8847,295 @@ def _export_train_all_sample_reports(logger):
         'test_false_negative_count': test_fn_count
     }
 
+def _convert_all_weights_to_onnx(weights_dir, logger):
+    import json
+    import pickle
+    from pathlib import Path
+    import numpy as np
+    import torch
+    import torch.nn as nn
+    from collections import OrderedDict
+    import lightgbm as lgb
+    from skl2onnx import to_onnx
+    from skl2onnx.common.data_types import FloatTensorType as SkFloatTensorType
+    from onnxmltools import convert_lightgbm, convert_xgboost
+    from onnxmltools.convert.common.data_types import FloatTensorType as OnnxFloatTensorType
+
+    weights_path = Path(weights_dir)
+    weights_path.mkdir(parents=True, exist_ok=True)
+    summary = {'converted': [], 'skipped': [], 'failed': []}
+
+    def _append(kind, src, dst=None, reason=''):
+        item = {'source': str(src)}
+        if dst is not None:
+            item['target'] = str(dst)
+        if reason:
+            item['reason'] = reason
+        summary[kind].append(item)
+
+    txt_models = sorted(weights_path.glob('*.txt'))
+    for src in txt_models:
+        try:
+            booster = lgb.Booster(model_file=str(src))
+            input_dim = int(booster.num_feature())
+            model = convert_lightgbm(booster, initial_types=[('input', OnnxFloatTensorType([None, input_dim]))], target_opset=15)
+            dst = src.with_suffix('.onnx')
+            with open(dst, 'wb') as f:
+                f.write(model.SerializeToString())
+            _append('converted', src, dst)
+        except Exception as e:
+            _append('failed', src, reason=str(e))
+
+    scaler_path = weights_path / 'feature_scaler.pkl'
+    if scaler_path.exists():
+        try:
+            with open(scaler_path, 'rb') as f:
+                scaler = pickle.load(f)
+            if hasattr(scaler, 'n_features_in_'):
+                input_dim = int(scaler.n_features_in_)
+            elif hasattr(scaler, 'mean_'):
+                input_dim = int(len(scaler.mean_))
+            else:
+                raise RuntimeError('无法识别feature_scaler输入维度')
+            scaler_onnx = to_onnx(scaler, initial_types=[('input', SkFloatTensorType([None, input_dim]))], target_opset=15)
+            scaler_out = scaler_path.with_suffix('.onnx')
+            with open(scaler_out, 'wb') as f:
+                f.write(scaler_onnx.SerializeToString())
+            _append('converted', scaler_path, scaler_out)
+        except Exception as e:
+            _append('failed', scaler_path, reason=str(e))
+
+    hardcase_payload_path = weights_path / 'hardcase_dl_model.pkl'
+    if hardcase_payload_path.exists():
+        try:
+            with open(hardcase_payload_path, 'rb') as f:
+                payload = pickle.load(f)
+            selected = payload.get('selected_feature_indices')
+            input_dim = int(len(selected)) if selected is not None else 384
+
+            lgb_ovr = payload.get('lgb_ovr')
+            if lgb_ovr is not None and hasattr(lgb_ovr, 'estimators_'):
+                for i, est in enumerate(lgb_ovr.estimators_):
+                    try:
+                        lgb_model = convert_lightgbm(est, initial_types=[('input', OnnxFloatTensorType([None, input_dim]))], target_opset=15)
+                        dst = weights_path / f'hardcase_lgb_ovr_class_{i}.onnx'
+                        with open(dst, 'wb') as f:
+                            f.write(lgb_model.SerializeToString())
+                        _append('converted', f'{hardcase_payload_path}#lgb_{i}', dst)
+                    except Exception as sub_e:
+                        _append('failed', f'{hardcase_payload_path}#lgb_{i}', reason=str(sub_e))
+
+            xgb_ovr = payload.get('xgb_ovr')
+            if xgb_ovr is not None and hasattr(xgb_ovr, 'estimators_'):
+                for i, est in enumerate(xgb_ovr.estimators_):
+                    try:
+                        xgb_model = convert_xgboost(est, initial_types=[('input', OnnxFloatTensorType([None, input_dim]))], target_opset=15)
+                        dst = weights_path / f'hardcase_xgb_ovr_class_{i}.onnx'
+                        with open(dst, 'wb') as f:
+                            f.write(xgb_model.SerializeToString())
+                        _append('converted', f'{hardcase_payload_path}#xgb_{i}', dst)
+                    except Exception as sub_e:
+                        _append('failed', f'{hardcase_payload_path}#xgb_{i}', reason=str(sub_e))
+
+            onnx_manifest = {
+                'input_dim': input_dim,
+                'selected_feature_indices': selected.tolist() if hasattr(selected, 'tolist') else selected,
+                'scaler_onnx': 'feature_scaler.onnx' if (weights_path / 'feature_scaler.onnx').exists() else None,
+                'main_lightgbm_onnx': 'lightgbm_model.onnx' if (weights_path / 'lightgbm_model.onnx').exists() else None,
+                'normal_lightgbm_onnx': 'lightgbm_model_normal.onnx' if (weights_path / 'lightgbm_model_normal.onnx').exists() else None,
+                'packed_lightgbm_onnx': 'lightgbm_model_packed.onnx' if (weights_path / 'lightgbm_model_packed.onnx').exists() else None,
+                'hardcase_lgb_ovr_onnx': [f'hardcase_lgb_ovr_class_{i}.onnx' for i in range(3)],
+                'hardcase_xgb_ovr_onnx': [f'hardcase_xgb_ovr_class_{i}.onnx' for i in range(3)],
+            }
+            manifest_path = weights_path / 'weights_onnx_manifest.json'
+            manifest_path.write_text(json.dumps(onnx_manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+            _append('converted', hardcase_payload_path, manifest_path)
+        except Exception as e:
+            _append('failed', hardcase_payload_path, reason=str(e))
+
+    class _LegacyAttentionExpert(nn.Module):
+        def __init__(self, input_dim, hidden_dim, heads, latent_tokens):
+            super().__init__()
+            self.input_dim = int(input_dim)
+            self.hidden_dim = int(hidden_dim)
+            self.heads = int(heads)
+            self.latent_tokens = int(latent_tokens)
+            self.to_tokens = nn.Linear(self.input_dim, self.hidden_dim * self.latent_tokens)
+            self.attn = nn.MultiheadAttention(self.hidden_dim, self.heads, batch_first=True)
+            self.norm1 = nn.LayerNorm(self.hidden_dim)
+            self.ffn = nn.Sequential(
+                nn.Linear(self.hidden_dim, self.hidden_dim * 2),
+                nn.GELU(),
+                nn.Linear(self.hidden_dim * 2, self.hidden_dim),
+            )
+            self.norm2 = nn.LayerNorm(self.hidden_dim)
+            self.to_gate = nn.Linear(self.hidden_dim * self.latent_tokens, self.input_dim)
+
+        def forward(self, x):
+            tokens = self.to_tokens(x).view(-1, self.latent_tokens, self.hidden_dim)
+            attn_out, _ = self.attn(tokens, tokens, tokens, need_weights=False)
+            tokens = self.norm1(tokens + attn_out)
+            ffn_out = self.ffn(tokens)
+            tokens = self.norm2(tokens + ffn_out)
+            flattened = tokens.reshape(tokens.shape[0], -1)
+            return self.to_gate(flattened)
+
+    class _LegacyNNExpert(nn.Module):
+        def __init__(self, input_dim, hidden_dim, dropout, output_dim):
+            super().__init__()
+            self.net = nn.Sequential(OrderedDict([
+                ('0', nn.Linear(int(input_dim), int(hidden_dim))),
+                ('1', nn.ReLU()),
+                ('2', nn.BatchNorm1d(int(hidden_dim))),
+                ('3', nn.Dropout(float(dropout))),
+                ('4', nn.Linear(int(hidden_dim), int(hidden_dim // 2))),
+                ('5', nn.ReLU()),
+                ('6', nn.BatchNorm1d(int(hidden_dim // 2))),
+                ('7', nn.Dropout(float(dropout))),
+                ('8', nn.Linear(int(hidden_dim // 2), int(output_dim))),
+            ]))
+
+        def forward(self, x):
+            out = self.net(x)
+            if out.shape[-1] == 1:
+                return torch.sigmoid(out)
+            return out
+
+    class _HardcaseBaseMLP(nn.Module):
+        def __init__(self, input_dim, output_dim):
+            super().__init__()
+            self.net = nn.Sequential(OrderedDict([
+                ('0', nn.Linear(int(input_dim), 512)),
+                ('1', nn.BatchNorm1d(512)),
+                ('2', nn.GELU()),
+                ('3', nn.Dropout(0.2)),
+                ('4', nn.Linear(512, 256)),
+                ('5', nn.BatchNorm1d(256)),
+                ('6', nn.GELU()),
+                ('7', nn.Dropout(0.2)),
+                ('8', nn.Linear(256, 128)),
+                ('9', nn.GELU()),
+                ('10', nn.Dropout(0.1)),
+                ('11', nn.Linear(128, int(output_dim))),
+            ]))
+
+        def forward(self, x):
+            return self.net(x)
+
+    class _HardcaseResidualBlock(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.block = nn.Sequential(OrderedDict([
+                ('0', nn.Linear(int(dim), int(dim))),
+                ('1', nn.BatchNorm1d(int(dim))),
+                ('2', nn.GELU()),
+                ('3', nn.Dropout(0.15)),
+                ('4', nn.Linear(int(dim), int(dim))),
+                ('5', nn.BatchNorm1d(int(dim))),
+            ]))
+
+        def forward(self, x):
+            return torch.relu(self.block(x) + x)
+
+    class _HardcaseFnModel(nn.Module):
+        def __init__(self, input_dim, stem_dim, proj_dim, head_dim, output_dim):
+            super().__init__()
+            self.stem = nn.Sequential(OrderedDict([
+                ('0', nn.Linear(int(input_dim), int(stem_dim))),
+                ('1', nn.BatchNorm1d(int(stem_dim))),
+                ('2', nn.GELU()),
+            ]))
+            self.res1 = _HardcaseResidualBlock(int(stem_dim))
+            self.down1 = nn.Sequential(OrderedDict([
+                ('0', nn.Linear(int(stem_dim), int(proj_dim))),
+                ('1', nn.BatchNorm1d(int(proj_dim))),
+            ]))
+            self.res2 = _HardcaseResidualBlock(int(proj_dim))
+            self.head = nn.Sequential(OrderedDict([
+                ('0', nn.Linear(int(proj_dim), int(head_dim))),
+                ('1', nn.GELU()),
+                ('2', nn.Dropout(0.1)),
+                ('3', nn.Linear(int(head_dim), int(output_dim))),
+            ]))
+
+        def forward(self, x):
+            x = self.stem(x)
+            x = self.res1(x)
+            x = torch.relu(self.down1(x))
+            x = self.res2(x)
+            return self.head(x)
+
+    def _export_torch_onnx(model, input_dim, dst):
+        model.eval()
+        dummy = torch.randn(2, int(input_dim), dtype=torch.float32)
+        torch.onnx.export(
+            model,
+            dummy,
+            str(dst),
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
+            opset_version=17,
+        )
+
+    for pt_file in sorted(weights_path.glob('*.pt')):
+        try:
+            try:
+                payload = torch.load(pt_file, map_location='cpu')
+            except Exception:
+                payload = torch.load(pt_file, map_location='cpu', weights_only=False)
+            state = None
+            model = None
+            input_dim = None
+            output_dim = None
+
+            if isinstance(payload, dict) and 'state_dict' in payload and 'to_tokens.weight' in payload['state_dict']:
+                state = payload['state_dict']
+                input_dim = int(payload.get('input_dim', state['to_tokens.weight'].shape[1]))
+                hidden_dim = int(payload.get('hidden_dim', state['attn.out_proj.weight'].shape[0]))
+                heads = int(payload.get('heads', 8))
+                latent_tokens = int(payload.get('latent_tokens', state['to_tokens.weight'].shape[0] // hidden_dim))
+                model = _LegacyAttentionExpert(input_dim, hidden_dim, heads, latent_tokens)
+            elif isinstance(payload, dict) and 'state_dict' in payload and 'net.0.weight' in payload['state_dict']:
+                state = payload['state_dict']
+                input_dim = int(payload.get('input_dim', state['net.0.weight'].shape[1]))
+                hidden_dim = int(payload.get('hidden_dim', state['net.0.weight'].shape[0]))
+                output_dim = int(state['net.8.weight'].shape[0])
+                dropout = float(payload.get('dropout', 0.2))
+                model = _LegacyNNExpert(input_dim, hidden_dim, dropout, output_dim)
+            elif isinstance(payload, dict) and 'model_state_dict' in payload and 'stem.0.weight' in payload['model_state_dict']:
+                state = payload['model_state_dict']
+                input_dim = int(state['stem.0.weight'].shape[1])
+                stem_dim = int(state['stem.0.weight'].shape[0])
+                proj_dim = int(state['down1.0.weight'].shape[0])
+                head_dim = int(state['head.0.weight'].shape[0])
+                output_dim = int(state['head.3.weight'].shape[0])
+                model = _HardcaseFnModel(input_dim, stem_dim, proj_dim, head_dim, output_dim)
+            elif isinstance(payload, dict) and 'model_state_dict' in payload and 'net.0.weight' in payload['model_state_dict']:
+                state = payload['model_state_dict']
+                input_dim = int(payload.get('input_dim', state['net.0.weight'].shape[1]))
+                output_dim = int(payload.get('num_classes', state['net.11.weight'].shape[0]))
+                model = _HardcaseBaseMLP(input_dim, output_dim)
+            else:
+                raise RuntimeError('未识别的PT权重结构，无法构建网络')
+
+            model.load_state_dict(state, strict=True)
+            dst = pt_file.with_suffix('.onnx')
+            _export_torch_onnx(model, input_dim, dst)
+            _append('converted', pt_file, dst)
+        except Exception as e:
+            _append('failed', pt_file, reason=str(e))
+
+    for pkl_file in sorted(weights_path.glob('*.pkl')):
+        if pkl_file.name not in {'feature_scaler.pkl', 'hardcase_dl_model.pkl'}:
+            _append('skipped', pkl_file, reason='当前仅支持feature_scaler.pkl与hardcase_dl_model.pkl自动导出')
+
+    summary_path = weights_path / 'weights_onnx_conversion_report.json'
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    logger.info(f'ONNX转换完成，报告: {summary_path}')
+    logger.info(f"ONNX转换统计 converted={len(summary['converted'])} skipped={len(summary['skipped'])} failed={len(summary['failed'])}")
+    return summary_path
+
 def main():
     log_level = os.environ.get('KVD_LOG_LEVEL', 'INFO')
     configure_logging(log_file_name='app.log', level=log_level)
@@ -8967,6 +9257,8 @@ def main():
     sp_train_hardcase_dl.add_argument('--max-input-dim', type=int, default=384, help='筛选后的最大输入特征维数')
     sp_train_hardcase_dl.add_argument('--max-samples-per-class', type=int, default=0, help='每类样本上限，0 表示不限制')
     subs.add_parser('hardcase-model-trials', help='执行 hardcase A/B/C 三方案对比试验')
+    sp_convert_weights_onnx = subs.add_parser('convert-weights-onnx', help='将权重目录中的可转换模型统一导出为ONNX')
+    sp_convert_weights_onnx.add_argument('--weights-dir', type=str, default=SAVED_MODEL_DIR, help='权重目录路径')
 
     args = parser.parse_args()
 
@@ -9211,6 +9503,12 @@ def main():
             logger.info(f"AutoML完成: {result}")
         except Exception as e:
             logger.error(f'AutoML失败: {e}')
+            raise
+    elif args.command == 'convert-weights-onnx':
+        try:
+            _convert_all_weights_to_onnx(args.weights_dir, logger)
+        except Exception as e:
+            logger.error(f'ONNX导出失败: {e}')
             raise
 
 if __name__ == '__main__':

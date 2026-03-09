@@ -12,3 +12,8 @@ tqdm
 argparse
 optuna
 hyperopt
+onnx
+onnxscript
+onnxruntime
+onnxmltools
+skl2onnx
