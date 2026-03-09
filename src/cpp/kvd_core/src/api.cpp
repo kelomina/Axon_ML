@@ -118,6 +118,13 @@ static nlohmann::json to_json(const kvd::ScanResult& r) {
   j["confidence"] = r.confidence;
   j["axon_malware"] = r.axon_malware;
   j["axon_score"] = r.axon_score;
+  j["hardcase_triggered"] = r.hardcase_triggered;
+  if (!r.hardcase_class.empty()) {
+    j["hardcase_class"] = r.hardcase_class;
+  }
+  if (!r.hardcase_scores.empty()) {
+    j["hardcase_scores"] = r.hardcase_scores;
+  }
   j["signature_hit"] = r.signature_hit;
   j["signature_score"] = r.signature_score;
   if (!r.signature_reason.empty()) {

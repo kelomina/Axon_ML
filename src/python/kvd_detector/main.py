@@ -5202,6 +5202,29 @@ def run_training(args):
     }
     with open(model_path, 'wb') as f:
         pickle.dump(payload, f)
+    cxx_model_paths = []
+    for i, est in enumerate(lgb_ovr.estimators_):
+        booster = getattr(est, 'booster_', None)
+        if booster is None:
+            raise RuntimeError(f'第{i}个LightGBM子模型缺少booster_，无法导出C++部署模型')
+        cxx_model_path = weights_dir / f'hardcase_lgb_ovr_class_{i}.txt'
+        booster.save_model(str(cxx_model_path))
+        cxx_model_paths.append(cxx_model_path.name)
+    cxx_manifest = {
+        'model_family': 'plan_a_lgb_ovr_cxx',
+        'class_model_paths': cxx_model_paths,
+        'input_dim': int(X_train.shape[1]),
+        'num_classes': 3,
+        'label_to_id': LABEL_TO_ID,
+        'id_to_label': {str(k): v for k, v in ID_TO_LABEL.items()},
+        'scaler_mean': scaler.mean_.astype(np.float32).tolist(),
+        'scaler_scale': scaler.scale_.astype(np.float32).tolist(),
+        'selected_feature_indices': selected_idx.astype(np.int64).tolist(),
+        'cascade_fn_threshold': float(args.cascade_fn_threshold),
+        'cascade_fn_margin': float(args.cascade_fn_margin),
+    }
+    cxx_manifest_path = weights_dir / 'hardcase_cxx_manifest.json'
+    cxx_manifest_path.write_text(json.dumps(cxx_manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     metrics = {
         'dataset': {
             'data_source': data_source,
@@ -5252,11 +5275,13 @@ def run_training(args):
         'history': history,
         'cascade': cascade_summary,
         'model_path': str(model_path),
+        'cxx_manifest_path': str(cxx_manifest_path),
         'plots': plot_paths,
     }
     metrics_path = eval_dir / 'hardcase_dl_metrics.json'
     metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f"[hardcase-dl] model saved: {model_path}")
+    print(f"[hardcase-dl] cxx manifest saved: {cxx_manifest_path}")
     print(f"[hardcase-dl] metrics saved: {metrics_path}")
     return metrics
 

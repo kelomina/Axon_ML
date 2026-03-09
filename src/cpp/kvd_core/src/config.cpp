@@ -25,6 +25,7 @@ static constexpr const char* ENV_LIGHTGBM_MODEL_PATH = "SCANNER_LIGHTGBM_MODEL_P
 static constexpr const char* ENV_LIGHTGBM_MODEL_NORMAL_PATH = "SCANNER_LIGHTGBM_MODEL_NORMAL_PATH";
 static constexpr const char* ENV_LIGHTGBM_MODEL_PACKED_PATH = "SCANNER_LIGHTGBM_MODEL_PACKED_PATH";
 static constexpr const char* ENV_FAMILY_CLASSIFIER_PATH = "SCANNER_FAMILY_CLASSIFIER_PATH";
+static constexpr const char* ENV_HARDCASE_MANIFEST_PATH = "SCANNER_HARDCASE_MANIFEST_PATH";
 static constexpr const char* ENV_ALLOWED_SCAN_ROOT = "SCANNER_ALLOWED_SCAN_ROOT";
 static constexpr const char* ENV_MAX_FILE_SIZE = "SCANNER_MAX_FILE_SIZE";
 static constexpr const char* ENV_PREDICTION_THRESHOLD = "SCANNER_PREDICTION_THRESHOLD";
@@ -99,6 +100,10 @@ Config config_from_api(
     auto env_fc = getenv_string(ENV_FAMILY_CLASSIFIER_PATH);
     if (env_fc) cfg.family_classifier_json_path = *env_fc;
   }
+  if (cfg.hardcase_manifest_path.empty()) {
+    auto env_hardcase = getenv_string(ENV_HARDCASE_MANIFEST_PATH);
+    if (env_hardcase) cfg.hardcase_manifest_path = *env_hardcase;
+  }
 
   if (!cfg.allowed_scan_root) {
     auto env_root = getenv_string(ENV_ALLOWED_SCAN_ROOT);
@@ -146,6 +151,12 @@ Config config_from_api(
     std::string default_fc = (std::filesystem::path("hdbscan_cluster_results") / "family_classifier.json").string();
     if (path_exists(default_fc)) {
       cfg.family_classifier_json_path = default_fc;
+    }
+  }
+  if (cfg.hardcase_manifest_path.empty()) {
+    std::string default_hardcase = (std::filesystem::path("resources") / "weights_cluster_eval" / "weights" / "hardcase_cxx_manifest.json").string();
+    if (path_exists(default_hardcase)) {
+      cfg.hardcase_manifest_path = default_hardcase;
     }
   }
 
