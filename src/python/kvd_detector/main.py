@@ -73,8 +73,8 @@ PROCESSED_DATA_DIR = os.path.join(PROJECT_ROOT, 'data', 'processed_lightgbm')
 METADATA_FILE = os.path.join(PROCESSED_DATA_DIR, 'metadata.json')
 # SAVED_MODEL_DIR：模型保存目录；用途：保存训练生成的模型文件；推荐值：resources/weights_cluster_eval/weights
 SAVED_MODEL_DIR = os.path.join(RESOURCES_DIR, 'weights')
-# MODEL_PATH：LightGBM 模型文件路径；用途：扫描与评估加载模型；推荐值：resources/weights_cluster_eval/weights/lightgbm_model.txt
-MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model.txt')
+# MODEL_PATH：主模型路径；用途：扫描与评估加载模型；推荐值：resources/weights_cluster_eval/weights/lightgbm_model.onnx
+MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model.onnx')
 FEATURE_SCALER_PATH = os.path.join(SAVED_MODEL_DIR, 'feature_scaler.pkl')
 THRESHOLD_REPORT_PATH = os.path.join(RESOURCES_DIR, 'eval', 'threshold_optimization.json')
 # HDBSCAN_SAVE_DIR：聚类结果目录；用途：保存标签与可视化；推荐值：resources/weights_cluster_eval/cluster
@@ -2228,24 +2228,53 @@ def incremental_train_lightgbm_model(existing_model, X_train, y_train, X_val, y_
 
 _register_embedded("training.model_io", r'''import os
 import lightgbm as lgb
+from onnxmltools import convert_lightgbm
+from onnxmltools.convert.common.data_types import FloatTensorType as OnnxFloatTensorType
 
 def save_model(model, model_path):
-    model.save_model(model_path)
-    print(f"[+] Model saved to: {model_path}")
+    if str(model_path).lower().endswith('.onnx'):
+        onnx_path = model_path
+    else:
+        onnx_path = os.path.splitext(model_path)[0] + '.onnx'
+    train_txt_path = os.path.splitext(onnx_path)[0] + '.train.txt'
+    model.save_model(train_txt_path)
+    print(f"[+] Training LightGBM model saved to: {train_txt_path}")
+    input_dim = int(model.num_feature())
+    onnx_model = convert_lightgbm(model, initial_types=[('input', OnnxFloatTensorType([None, input_dim]))], target_opset=15)
+    with open(onnx_path, 'wb') as f:
+        f.write(onnx_model.SerializeToString())
+    print(f"[+] ONNX model saved to: {onnx_path}")
+    legacy_txt_path = os.path.splitext(onnx_path)[0] + '.txt'
+    if os.path.exists(legacy_txt_path):
+        try:
+            os.remove(legacy_txt_path)
+            print(f"[+] Removed legacy txt model: {legacy_txt_path}")
+        except Exception:
+            pass
 
 def load_existing_model(model_path):
-    if os.path.exists(model_path):
-        print(f"[*] Loading existing model: {model_path}")
-        try:
-            model = lgb.Booster(model_file=model_path)
-            print("[+] Existing model loaded successfully")
-            return model
-        except Exception as e:
-            print(f"[!] Model loading failed: {e}")
-            return None
-    else:
-        print(f"[-] Existing model not found: {model_path}")
-        return None
+    candidates = []
+    if str(model_path).lower().endswith('.onnx'):
+        candidates.append(os.path.splitext(model_path)[0] + '.train.txt')
+        candidates.append(os.path.splitext(model_path)[0] + '.txt')
+    candidates.append(model_path)
+    seen = set()
+    ordered = []
+    for p in candidates:
+        if p and p not in seen:
+            ordered.append(p)
+            seen.add(p)
+    for candidate in ordered:
+        if os.path.exists(candidate):
+            print(f"[*] Loading existing model: {candidate}")
+            try:
+                model = lgb.Booster(model_file=candidate)
+                print("[+] Existing model loaded successfully")
+                return model
+            except Exception as e:
+                print(f"[!] Model loading failed: {e}")
+    print(f"[-] Existing model not found: {model_path}")
+    return None
 ''')
 
 _register_embedded("training.train_lightgbm", r'''import numpy as np
@@ -3237,6 +3266,24 @@ def train_gating_model_process(X_train, y_train, X_val, y_val):
             best_val_acc = val_acc
             torch.save(model.state_dict(), GATING_MODEL_PATH)
     print(f"[+] Gating Model saved to {GATING_MODEL_PATH} (Best Acc: {best_val_acc:.4f})")
+    try:
+        onnx_path = os.path.splitext(GATING_MODEL_PATH)[0] + '.onnx'
+        export_model = create_gating_model(GATING_MODE, GATING_INPUT_DIM, GATING_HIDDEN_DIM, GATING_OUTPUT_DIM)
+        export_model.load_state_dict(torch.load(GATING_MODEL_PATH, map_location='cpu'))
+        export_model.eval()
+        dummy = torch.randn(2, GATING_INPUT_DIM, dtype=torch.float32)
+        torch.onnx.export(
+            export_model,
+            dummy,
+            onnx_path,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
+            opset_version=17,
+        )
+        print(f"[+] Gating ONNX saved to {onnx_path}")
+    except Exception as e:
+        raise RuntimeError(f"Gating ONNX导出失败: {e}")
     return model
 
 def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_train, files_val, 
@@ -3324,7 +3371,7 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
                 params_override=getattr(args, 'override_params', None)
             )
             
-    model.save_model(model_path)
+    save_model(model, model_path)
     print(f"[+] {expert_name} saved to {model_path}")
     return model
 
@@ -5898,6 +5945,16 @@ def main(args):
     with open(FEATURE_SCALER_PATH, 'wb') as f:
         pickle.dump(scaler, f)
     print(f"[+] Feature scaler saved to: {FEATURE_SCALER_PATH}")
+    try:
+        from skl2onnx import to_onnx
+        from skl2onnx.common.data_types import FloatTensorType as SkFloatTensorType
+        scaler_onnx = to_onnx(scaler, initial_types=[('input', SkFloatTensorType([None, int(X_train.shape[1])]))], target_opset=15)
+        scaler_onnx_path = os.path.splitext(FEATURE_SCALER_PATH)[0] + '.onnx'
+        with open(scaler_onnx_path, 'wb') as f:
+            f.write(scaler_onnx.SerializeToString())
+        print(f"[+] Feature scaler ONNX saved to: {scaler_onnx_path}")
+    except Exception as e:
+        raise RuntimeError(f"Feature scaler ONNX导出失败: {e}")
     weight_map = _build_sample_weight_map()
     sample_weights = _build_train_weights(files_train, weight_map)
 
@@ -6707,6 +6764,8 @@ class MalwareScanner:
         self.cache_file = cache_file
         self.enable_cache = enable_cache
         self.binary_classifier = None
+        self.onnx_session = None
+        self.onnx_input_name = None
         self.routing_model = None
         self.feature_scaler = None
         self.feature_selector_indices = None
@@ -6731,14 +6790,24 @@ class MalwareScanner:
         if not GATING_ENABLED or self.routing_model is None:
             self._debug("[*] Loading LightGBM binary classification model...")
             model_path = lightgbm_model_path
-            if model_path.endswith('.gz'):
+            if model_path.endswith('.onnx'):
+                import onnxruntime as ort
+                self.onnx_session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+                self.onnx_input_name = self.onnx_session.get_inputs()[0].name
+                self._temp_model_path = None
+                self._debug("[+] ONNX binary classification model loaded")
+            elif model_path.endswith('.gz'):
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
                     with gzip.open(model_path, 'rb') as gf:
                         shutil.copyfileobj(gf, tmp)
                     model_path = tmp.name
-            self.binary_classifier = lgb.Booster(model_file=model_path)
-            self._temp_model_path = model_path if model_path != lightgbm_model_path else None
-            self._debug("[+] LightGBM binary classification model loaded")
+                self.binary_classifier = lgb.Booster(model_file=model_path)
+                self._temp_model_path = model_path if model_path != lightgbm_model_path else None
+                self._debug("[+] LightGBM binary classification model loaded")
+            else:
+                self.binary_classifier = lgb.Booster(model_file=model_path)
+                self._temp_model_path = model_path if model_path != lightgbm_model_path else None
+                self._debug("[+] LightGBM binary classification model loaded")
         try:
             if os.path.exists(FEATURE_SCALER_PATH):
                 with open(FEATURE_SCALER_PATH, 'rb') as f:
@@ -6893,6 +6962,16 @@ class MalwareScanner:
                 prediction_val = predictions[0]
             elif self.binary_classifier is not None:
                 prediction_val = self.binary_classifier.predict(feature_vector)[0]
+            elif self.onnx_session is not None:
+                outputs = self.onnx_session.run(None, {self.onnx_input_name: feature_vector.astype(np.float32)})
+                result = outputs[1] if isinstance(outputs, list) and len(outputs) > 1 else outputs[0]
+                if isinstance(result, np.ndarray):
+                    if result.ndim == 2 and result.shape[1] > 1:
+                        prediction_val = float(result[0, 1])
+                    else:
+                        prediction_val = float(result.reshape(-1)[0])
+                else:
+                    prediction_val = float(result)
             else:
                 raise Exception("No model loaded for prediction")
 
@@ -6913,6 +6992,16 @@ class MalwareScanner:
                 predictions, decisions = self.routing_model.predict(features_matrix)
             elif self.binary_classifier is not None:
                 predictions = self.binary_classifier.predict(features_matrix)
+            elif self.onnx_session is not None:
+                outputs = self.onnx_session.run(None, {self.onnx_input_name: np.asarray(features_matrix, dtype=np.float32)})
+                result = outputs[1] if isinstance(outputs, list) and len(outputs) > 1 else outputs[0]
+                if isinstance(result, np.ndarray):
+                    if result.ndim == 2 and result.shape[1] > 1:
+                        predictions = result[:, 1]
+                    else:
+                        predictions = result.reshape(-1)
+                else:
+                    predictions = np.asarray(result, dtype=np.float32).reshape(-1)
             else:
                 raise Exception("No model loaded for prediction")
             
@@ -8758,7 +8847,15 @@ def _export_train_all_sample_reports(logger):
         else:
             logger.warning(f'样本导出未找到标准化器，使用原始特征: {FEATURE_SCALER_PATH}')
 
-        model = lgb.Booster(model_file=MODEL_PATH)
+        train_model_path = MODEL_PATH
+        if str(train_model_path).lower().endswith('.onnx'):
+            candidate = os.path.splitext(train_model_path)[0] + '.train.txt'
+            if os.path.exists(candidate):
+                train_model_path = candidate
+            else:
+                fallback = os.path.splitext(train_model_path)[0] + '.txt'
+                train_model_path = fallback if os.path.exists(fallback) else train_model_path
+        model = lgb.Booster(model_file=train_model_path)
         best_iteration = getattr(model, 'best_iteration', None)
         if isinstance(best_iteration, int) and best_iteration > 0:
             y_pred_proba = model.predict(X, num_iteration=best_iteration)
@@ -8873,7 +8970,7 @@ def _convert_all_weights_to_onnx(weights_dir, logger):
             item['reason'] = reason
         summary[kind].append(item)
 
-    txt_models = sorted(weights_path.glob('*.txt'))
+    txt_models = [p for p in sorted(weights_path.glob('*.txt')) if not p.name.endswith('.train.txt')]
     for src in txt_models:
         try:
             booster = lgb.Booster(model_file=str(src))
@@ -9136,6 +9233,19 @@ def _convert_all_weights_to_onnx(weights_dir, logger):
     logger.info(f"ONNX转换统计 converted={len(summary['converted'])} skipped={len(summary['skipped'])} failed={len(summary['failed'])}")
     return summary_path
 
+def _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False):
+    import json
+    summary_path = _convert_all_weights_to_onnx(SAVED_MODEL_DIR, logger)
+    summary = json.loads(open(summary_path, 'r', encoding='utf-8').read())
+    failed = summary.get('failed', [])
+    if failed:
+        raise RuntimeError(f"训练后ONNX导出存在失败项: {len(failed)}")
+    if not keep_train_txt:
+        train_txt = os.path.splitext(MODEL_PATH)[0] + '.train.txt'
+        if os.path.exists(train_txt):
+            os.remove(train_txt)
+            logger.info(f'已清理非增量训练侧车文件: {train_txt}')
+
 def main():
     log_level = os.environ.get('KVD_LOG_LEVEL', 'INFO')
     configure_logging(log_file_name='app.log', level=log_level)
@@ -9266,6 +9376,7 @@ def main():
         import pretrain
         try:
             pretrain.main(args)
+            _ensure_onnx_artifacts_after_training(logger, keep_train_txt=bool(getattr(args, 'incremental_training', False)))
         except Exception as e:
             logger.error(f'预训练失败: {e}')
             raise
@@ -9338,6 +9449,7 @@ def main():
         from training import train_routing
         try:
             train_routing.main(args)
+            _ensure_onnx_artifacts_after_training(logger, keep_train_txt=bool(getattr(args, 'incremental_training', False)))
         except Exception as e:
             logger.error(f'路由系统训练失败: {e}')
             raise
@@ -9345,6 +9457,7 @@ def main():
         from training import hardcase_dl
         try:
             hardcase_dl.main(args)
+            _ensure_onnx_artifacts_after_training(logger, keep_train_txt=bool(getattr(args, 'incremental_training', False)))
         except Exception as e:
             logger.error(f'困难样本深度学习训练失败: {e}')
             raise
@@ -9483,6 +9596,7 @@ def main():
             )
             finetune.main(fine_args)
             _export_train_all_sample_reports(logger)
+            _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False)
             logger.info('训练与聚类流程已完成')
         except Exception as e:
             logger.error(f'一键训练失败: {e}')
