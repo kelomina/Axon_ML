@@ -257,6 +257,64 @@ static bool path_exists(const std::string& path) {
   return std::filesystem::exists(*p, ec) && !ec;
 }
 
+static int validate_hardcase_manifest(const std::string& manifest_path, std::string& error_code) {
+  if (manifest_path.empty()) {
+    return KVD_MODEL_OK;
+  }
+  if (!path_exists(manifest_path)) {
+    error_code = "hardcase_manifest_missing";
+    return KVD_MODEL_ERR_HARDCASE_MANIFEST_MISSING;
+  }
+  auto manifest_fs = kvd::to_filesystem_path(manifest_path);
+  if (!manifest_fs) {
+    error_code = "hardcase_manifest_invalid";
+    return KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID;
+  }
+  std::ifstream in(*manifest_fs);
+  if (!in) {
+    error_code = "hardcase_manifest_invalid";
+    return KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID;
+  }
+  nlohmann::json j;
+  try {
+    in >> j;
+  } catch (...) {
+    error_code = "hardcase_manifest_invalid";
+    return KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID;
+  }
+  if (!j.is_object()) {
+    error_code = "hardcase_manifest_invalid";
+    return KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID;
+  }
+  auto model_paths = j.value("class_model_paths", nlohmann::json::array());
+  if (!model_paths.is_array() || model_paths.size() != 3) {
+    error_code = "hardcase_manifest_invalid";
+    return KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID;
+  }
+  std::filesystem::path base_dir = manifest_fs->parent_path();
+  for (const auto& item : model_paths) {
+    if (!item.is_string()) {
+      error_code = "hardcase_manifest_invalid";
+      return KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID;
+    }
+    std::filesystem::path model_path(item.get<std::string>());
+    if (model_path.is_relative()) {
+      model_path = base_dir / model_path;
+    }
+    auto u8 = model_path.u8string();
+    std::string model_path_utf8(reinterpret_cast<const char*>(u8.data()), u8.size());
+    if (!path_exists(model_path_utf8)) {
+      error_code = "hardcase_model_missing";
+      return KVD_MODEL_ERR_HARDCASE_MODEL_MISSING;
+    }
+    if (!kvd::LightGbmModel::load_from_file(model_path_utf8)) {
+      error_code = "hardcase_model_invalid";
+      return KVD_MODEL_ERR_HARDCASE_MODEL_INVALID;
+    }
+  }
+  return KVD_MODEL_OK;
+}
+
 static kvd::MalwareScanner* get_thread_scanner(kvd_handle* handle);
 
 static void collect_train_targets(const std::string& path, std::vector<std::string>& out) {
@@ -735,6 +793,14 @@ int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_
       if (!kvd::FamilyClassifier::load_from_json(cfg.family_classifier_json_path)) {
         int rc = write_error("family_classifier_invalid");
         return rc == 0 ? KVD_MODEL_ERR_FAMILY_INVALID : rc;
+      }
+    }
+    if (!cfg.hardcase_manifest_path.empty()) {
+      std::string hardcase_error;
+      int hardcase_rc = validate_hardcase_manifest(cfg.hardcase_manifest_path, hardcase_error);
+      if (hardcase_rc != KVD_MODEL_OK) {
+        int rc = write_error(hardcase_error);
+        return rc == 0 ? hardcase_rc : rc;
       }
     }
 
