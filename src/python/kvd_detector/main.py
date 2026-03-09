@@ -6557,13 +6557,6 @@ def main(args):
     with open(json_output, 'w', encoding='utf-8') as f:
         json.dump(family_classifier_json, f, ensure_ascii=False, separators=(',', ':'))
     print(f"[+] Family classifier json saved to: {json_output}")
-    legacy_dir = os.path.join(os.getcwd(), 'hdbscan_cluster_results')
-    legacy_json_output = os.path.join(legacy_dir, 'family_classifier.json')
-    if os.path.abspath(legacy_json_output) != os.path.abspath(json_output):
-        os.makedirs(legacy_dir, exist_ok=True)
-        with open(legacy_json_output, 'w', encoding='utf-8') as f:
-            json.dump(family_classifier_json, f, ensure_ascii=False, separators=(',', ':'))
-        print(f"[+] Family classifier json saved to: {legacy_json_output}")
 
     os.makedirs(HDBSCAN_SAVE_DIR, exist_ok=True)
     visualize_clusters(malicious_features, cluster_labels,
