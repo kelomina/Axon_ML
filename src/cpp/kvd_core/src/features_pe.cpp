@@ -25,12 +25,15 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -39,10 +42,13 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace kvd {
 
 static constexpr std::size_t PE_FEATURE_VECTOR_DIM = 1500;
 static constexpr std::size_t LIGHTWEIGHT_FEATURE_DIM = 256;
+static constexpr std::size_t STAT_FEATURE_DIM = 49;
 static constexpr float LIGHTWEIGHT_FEATURE_SCALE = 1.5f;
 static constexpr float PE_FEATURE_SCALE = 0.8f;
 
@@ -78,6 +84,67 @@ static constexpr std::array<const char*, 12> FILESYSTEM_API_KEYWORDS = {
 static constexpr std::array<const char*, 12> REGISTRY_API_KEYWORDS = {
     "regopenkey", "regcreatekey", "regsetvalue", "regqueryvalue", "regdeletevalue", "regdeletekey", "regclosekey", "regenumkey",
     "regenumvalue", "regconnectregistry", "regloadkey", "regsavekey"};
+
+static std::vector<std::filesystem::path> selector_candidates() {
+  std::vector<std::filesystem::path> out;
+  const char* env_path = std::getenv("KVD_FEATURE_SELECTOR_PATH");
+  if (env_path && *env_path) {
+    out.emplace_back(std::filesystem::path(env_path));
+  }
+  std::error_code ec;
+  std::filesystem::path base = std::filesystem::current_path(ec);
+  if (!ec) {
+    out.emplace_back(base / "resources" / "weights_cluster_eval" / "weights" / "feature_selector.json");
+    out.emplace_back(base / "resources" / "weights" / "feature_selector.json");
+  }
+  return out;
+}
+
+static std::unordered_set<std::size_t> load_removed_pe_feature_indices() {
+  std::unordered_set<std::size_t> removed;
+  for (const auto& path : selector_candidates()) {
+    std::ifstream in(path, std::ios::in);
+    if (!in) {
+      continue;
+    }
+    try {
+      nlohmann::json j;
+      in >> j;
+      auto arr = j.value("removed_indices", nlohmann::json::array());
+      if (!arr.is_array()) {
+        continue;
+      }
+      for (const auto& v : arr) {
+        std::int64_t global_idx = -1;
+        if (v.is_number_integer()) {
+          global_idx = v.get<std::int64_t>();
+        } else if (v.is_number_unsigned()) {
+          global_idx = static_cast<std::int64_t>(v.get<std::uint64_t>());
+        } else {
+          continue;
+        }
+        if (global_idx < static_cast<std::int64_t>(STAT_FEATURE_DIM)) {
+          continue;
+        }
+        std::int64_t pe_idx = global_idx - static_cast<std::int64_t>(STAT_FEATURE_DIM);
+        if (pe_idx >= 0 && pe_idx < static_cast<std::int64_t>(PE_FEATURE_VECTOR_DIM)) {
+          removed.insert(static_cast<std::size_t>(pe_idx));
+        }
+      }
+      if (!removed.empty()) {
+        break;
+      }
+    } catch (...) {
+      continue;
+    }
+  }
+  return removed;
+}
+
+static const std::unordered_set<std::size_t>& removed_pe_feature_indices() {
+  static const std::unordered_set<std::size_t> cached = load_removed_pe_feature_indices();
+  return cached;
+}
 
 static std::string lower_ascii(std::string s) {
   for (char& c : s) {
@@ -988,6 +1055,7 @@ std::vector<float> extract_combined_pe_features_from_path(
 
   std::vector<float> combined;
   combined.assign(PE_FEATURE_VECTOR_DIM, 0.0f);
+  const auto& removed_indices = removed_pe_feature_indices();
 
   std::vector<float> lw(LIGHTWEIGHT_FEATURE_DIM, 0.0f);
   {
@@ -1019,6 +1087,9 @@ std::vector<float> extract_combined_pe_features_from_path(
   }
 
   for (std::size_t i = 0; i < LIGHTWEIGHT_FEATURE_DIM; ++i) {
+    if (removed_indices.find(i) != removed_indices.end()) {
+      continue;
+    }
     combined[i] = lw[i] * LIGHTWEIGHT_FEATURE_SCALE;
   }
 
@@ -1027,6 +1098,10 @@ std::vector<float> extract_combined_pe_features_from_path(
 
   std::size_t base_offset = LIGHTWEIGHT_FEATURE_DIM;
   for (std::size_t i = 0; i < order.size() && base_offset + i < PE_FEATURE_VECTOR_DIM; ++i) {
+    std::size_t pe_idx = base_offset + i;
+    if (removed_indices.find(pe_idx) != removed_indices.end()) {
+      continue;
+    }
     const std::string& key = order[i];
     float v = 0.0f;
     auto it = all_features.find(key);
@@ -1047,7 +1122,7 @@ std::vector<float> extract_combined_pe_features_from_path(
     }
     v = clamp01(v);
     if (!std::isfinite(v)) v = 0.0f;
-    combined[base_offset + i] = v * PE_FEATURE_SCALE;
+    combined[pe_idx] = v * PE_FEATURE_SCALE;
   }
 
   l2_normalize(combined);

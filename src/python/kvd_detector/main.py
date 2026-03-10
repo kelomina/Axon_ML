@@ -5679,6 +5679,47 @@ def _collect_low_importance_features():
     return low_importance_indices, mean_abs_importance, stat
 
 
+def _load_zero_importance_feature_indices():
+    eval_dir = Path(RESOURCES_DIR) / 'eval'
+    json_path = eval_dir / 'full_feature_importance_ranking.json'
+    csv_path = eval_dir / 'full_feature_importance_ranking.csv'
+    rows = None
+    if json_path.exists():
+        try:
+            rows = json.loads(json_path.read_text(encoding='utf-8'))
+        except Exception:
+            rows = None
+    if rows is None and csv_path.exists():
+        try:
+            rows = pd.read_csv(csv_path).to_dict(orient='records')
+        except Exception:
+            rows = None
+    if not rows:
+        return set()
+    zero_indices = set()
+    for row in rows:
+        try:
+            gain = float(row.get('gain', 0.0))
+        except Exception:
+            gain = 0.0
+        try:
+            split = float(row.get('split', 0.0))
+        except Exception:
+            split = 0.0
+        if abs(gain) > 1e-15 or abs(split) > 1e-15:
+            continue
+        idx = None
+        try:
+            idx = int(row.get('feature_id'))
+        except Exception:
+            idx = None
+        if idx is None:
+            idx = _feature_index_from_name(row.get('feature', ''))
+        if idx is not None and idx >= 0:
+            zero_indices.add(int(idx))
+    return zero_indices
+
+
 def _make_feature_columns(n_features):
     return [f'feature_{i}' for i in range(int(n_features))]
 
@@ -5889,6 +5930,7 @@ def main(args):
     if feature_columns is None:
         feature_columns = _make_feature_columns(n_features_in)
     low_importance_indices, feature_importance_map, feature_select_stat = _collect_low_importance_features()
+    zero_importance_indices = _load_zero_importance_feature_indices()
     analysis_topk_indices = _load_analysis_topk_feature_indices()
     protected_indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 323, 412}
     protected_indices = protected_indices.union(analysis_topk_indices)
@@ -5896,9 +5938,11 @@ def main(args):
     max_remove_count = int(max(0, np.floor(float(n_features_in) * 0.2)))
     if max_remove_count > 0 and len(candidate_indices) > max_remove_count:
         candidate_indices = sorted(candidate_indices, key=lambda idx: float(feature_importance_map.get(int(idx), 0.0)))
-        removed_indices = sorted(candidate_indices[:max_remove_count])
+        removed_low_indices = sorted(candidate_indices[:max_remove_count])
     else:
-        removed_indices = sorted(candidate_indices)
+        removed_low_indices = sorted(candidate_indices)
+    removed_zero_indices = sorted([idx for idx in zero_importance_indices if 0 <= idx < n_features_in])
+    removed_indices = sorted(set(removed_low_indices).union(removed_zero_indices))
     removed_set = set(removed_indices)
     selected_indices = [idx for idx in range(n_features_in) if idx not in removed_set]
     if not selected_indices:
@@ -5908,6 +5952,8 @@ def main(args):
         X = X[:, selected_indices]
         feature_columns = [feature_columns[idx] for idx in selected_indices]
         print(f"[*] 已根据误判与假阴性重要度剔除特征: {len(removed_indices)} 个，保留 {len(selected_indices)} 个")
+        if removed_zero_indices:
+            print(f"[*] 额外剔除零重要度特征: {len(removed_zero_indices)} 个")
         print(f"[*] 特征筛选统计: {feature_select_stat}")
     _write_feature_selector_reports(len(files), n_features_in, selected_indices, removed_indices, feature_importance_map)
     save_features_to_pickle(X, y, files, FEATURES_PKL_PATH, feature_names=feature_columns)
