@@ -9099,6 +9099,109 @@ def _export_train_all_sample_reports(logger):
         'test_false_negative_count': test_fn_count
     }
 
+def _export_train_all_deep_engine_eval_report(logger, hardcase_metrics):
+    import json
+    from datetime import datetime
+    eval_dir = os.path.join(RESOURCES_DIR, 'eval')
+    os.makedirs(eval_dir, exist_ok=True)
+    report_path = os.path.join(eval_dir, 'train_all_deep_engine_eval.json')
+    metrics = hardcase_metrics if isinstance(hardcase_metrics, dict) else {}
+    validation = metrics.get('validation', {}) if isinstance(metrics.get('validation', {}), dict) else {}
+    report = {
+        'engine': 'hardcase_dl',
+        'generated_at': datetime.now().isoformat(),
+        'summary': {
+            'accuracy': float(validation.get('accuracy', 0.0)),
+            'macro_f1': float(validation.get('macro_f1', 0.0)),
+        },
+        'dataset': metrics.get('dataset', {}),
+        'validation': validation,
+        'validation_stability': metrics.get('validation_stability', {}),
+        'cascade': metrics.get('cascade', {}),
+        'artifacts': {
+            'model_path': metrics.get('model_path'),
+            'cxx_manifest_path': metrics.get('cxx_manifest_path'),
+            'plots': metrics.get('plots', {}),
+            'metrics_source': os.path.join(eval_dir, 'hardcase_dl_metrics.json')
+        }
+    }
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    logger.info(f'深度学习引擎评测报告已生成: {report_path}')
+    logger.info(f"深度学习引擎评测摘要: accuracy={report['summary']['accuracy']:.4f}, macro_f1={report['summary']['macro_f1']:.4f}")
+    return report_path
+
+def _merge_train_all_evaluation_summary(logger, deep_engine_report_path=None, sample_report_payload=None):
+    import json
+    from datetime import datetime
+    eval_dir = os.path.join(RESOURCES_DIR, 'eval')
+    os.makedirs(eval_dir, exist_ok=True)
+    summary_candidates = [
+        os.path.join(eval_dir, 'train_all_evaluation_summary.json'),
+        os.path.join(eval_dir, 'evaluation_summary.json'),
+        os.path.join(eval_dir, 'model_evaluation_summary.json')
+    ]
+    summary_path = summary_candidates[0]
+    for p in summary_candidates:
+        if os.path.exists(p):
+            summary_path = p
+            break
+    summary = {}
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                summary = loaded
+        except Exception:
+            summary = {}
+    deep_path = deep_engine_report_path or os.path.join(eval_dir, 'train_all_deep_engine_eval.json')
+    deep_report = {}
+    if os.path.exists(deep_path):
+        try:
+            with open(deep_path, 'r', encoding='utf-8') as f:
+                loaded_deep = json.load(f)
+            if isinstance(loaded_deep, dict):
+                deep_report = loaded_deep
+        except Exception:
+            deep_report = {}
+    hardcase_metrics_path = os.path.join(eval_dir, 'hardcase_dl_metrics.json')
+    hardcase_metrics = {}
+    if os.path.exists(hardcase_metrics_path):
+        try:
+            with open(hardcase_metrics_path, 'r', encoding='utf-8') as f:
+                loaded_metrics = json.load(f)
+            if isinstance(loaded_metrics, dict):
+                hardcase_metrics = loaded_metrics
+        except Exception:
+            hardcase_metrics = {}
+    threshold_report = {}
+    if os.path.exists(THRESHOLD_REPORT_PATH):
+        try:
+            with open(THRESHOLD_REPORT_PATH, 'r', encoding='utf-8') as f:
+                loaded_threshold = json.load(f)
+            if isinstance(loaded_threshold, dict):
+                threshold_report = loaded_threshold
+        except Exception:
+            threshold_report = {}
+    summary['generated_at'] = datetime.now().isoformat()
+    summary['deep_engine'] = deep_report
+    summary['deep_engine_metrics'] = hardcase_metrics
+    if isinstance(sample_report_payload, dict):
+        summary['sample_reports'] = sample_report_payload
+    summary['threshold_report'] = threshold_report
+    summary['report_paths'] = {
+        'deep_engine': deep_path if os.path.exists(deep_path) else None,
+        'deep_engine_metrics': hardcase_metrics_path if os.path.exists(hardcase_metrics_path) else None,
+        'sample_reports_dir': HDBSCAN_SAVE_DIR if os.path.exists(HDBSCAN_SAVE_DIR) else None,
+        'threshold_report': THRESHOLD_REPORT_PATH if os.path.exists(THRESHOLD_REPORT_PATH) else None,
+        'routing_report': ROUTING_EVAL_REPORT_PATH if os.path.exists(ROUTING_EVAL_REPORT_PATH) else None
+    }
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    logger.info(f'总评测汇总已更新: {summary_path}')
+    return summary_path
+
 def _convert_all_weights_to_onnx(weights_dir, logger):
     import json
     import pickle
@@ -9702,6 +9805,7 @@ def main():
                         override_params=override_params
                     )
                     pretrain.main(pre_args2)
+            sample_report_payload = _export_train_all_sample_reports(logger)
             hardcase_args = argparse.Namespace(
                 gbdt_estimators=args.hardcase_gbdt_estimators,
                 gbdt_learning_rate=args.hardcase_gbdt_learning_rate,
@@ -9717,7 +9821,8 @@ def main():
                 max_input_dim=args.hardcase_max_input_dim,
                 max_samples_per_class=args.hardcase_max_samples_per_class
             )
-            hardcase_dl.main(hardcase_args)
+            hardcase_metrics = hardcase_dl.main(hardcase_args)
+            deep_engine_report_path = _export_train_all_deep_engine_eval_report(logger, hardcase_metrics)
             routing_args = argparse.Namespace(
                 use_existing_features=True,
                 save_features=False,
@@ -9750,7 +9855,7 @@ def main():
                 skip_cluster_quality_eval=args.skip_cluster_quality_eval
             )
             finetune.main(fine_args)
-            _export_train_all_sample_reports(logger)
+            _merge_train_all_evaluation_summary(logger, deep_engine_report_path=deep_engine_report_path, sample_report_payload=sample_report_payload)
             _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False)
             logger.info('训练与聚类流程已完成')
         except Exception as e:
