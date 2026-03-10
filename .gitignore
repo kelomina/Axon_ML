@@ -64,3 +64,4 @@ logs
 attention_benchmark
 weights
 eval
+BUILD-VCPKG

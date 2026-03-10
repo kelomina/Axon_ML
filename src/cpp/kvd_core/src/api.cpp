@@ -21,6 +21,7 @@
 #include "util_filesystem.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -257,6 +258,44 @@ static bool path_exists(const std::string& path) {
   return std::filesystem::exists(*p, ec) && !ec;
 }
 
+static std::string to_utf8_string(const std::filesystem::path& p) {
+  auto u8 = p.u8string();
+  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+static bool is_onnx_path(const std::filesystem::path& p) {
+  std::string ext = p.extension().string();
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return ext == ".onnx";
+}
+
+static std::string resolve_lightgbm_runtime_path(const std::string& path) {
+  if (path.empty()) {
+    return path;
+  }
+  auto fs_opt = kvd::to_filesystem_path(path);
+  if (!fs_opt) {
+    return path;
+  }
+  const auto& fs_path = *fs_opt;
+  if (!is_onnx_path(fs_path)) {
+    return path;
+  }
+  std::filesystem::path base_dir = fs_path.parent_path();
+  std::string stem = fs_path.stem().string();
+  std::filesystem::path train_txt_path = base_dir / (stem + ".train.txt");
+  std::string train_txt_utf8 = to_utf8_string(train_txt_path);
+  if (path_exists(train_txt_utf8)) {
+    return train_txt_utf8;
+  }
+  std::filesystem::path legacy_txt_path = base_dir / (stem + ".txt");
+  std::string legacy_txt_utf8 = to_utf8_string(legacy_txt_path);
+  if (path_exists(legacy_txt_utf8)) {
+    return legacy_txt_utf8;
+  }
+  return path;
+}
+
 static int validate_hardcase_manifest(const std::string& manifest_path, std::string& error_code) {
   if (manifest_path.empty()) {
     return KVD_MODEL_OK;
@@ -303,11 +342,12 @@ static int validate_hardcase_manifest(const std::string& manifest_path, std::str
     }
     auto u8 = model_path.u8string();
     std::string model_path_utf8(reinterpret_cast<const char*>(u8.data()), u8.size());
-    if (!path_exists(model_path_utf8)) {
+    std::string runtime_model_path = resolve_lightgbm_runtime_path(model_path_utf8);
+    if (!path_exists(runtime_model_path)) {
       error_code = "hardcase_model_missing";
       return KVD_MODEL_ERR_HARDCASE_MODEL_MISSING;
     }
-    if (!kvd::LightGbmModel::load_from_file(model_path_utf8)) {
+    if (!kvd::LightGbmModel::load_from_file(runtime_model_path)) {
       error_code = "hardcase_model_invalid";
       return KVD_MODEL_ERR_HARDCASE_MODEL_INVALID;
     }
@@ -404,22 +444,23 @@ static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& p
   if (path.empty()) {
     return {};
   }
+  std::string runtime_path = resolve_lightgbm_runtime_path(path);
   static std::mutex mu;
   static std::unordered_map<std::string, std::weak_ptr<kvd::LightGbmModel>> cache;
   std::lock_guard<std::mutex> lock(mu);
-  auto it = cache.find(path);
+  auto it = cache.find(runtime_path);
   if (it != cache.end()) {
     auto sp = it->second.lock();
     if (sp) {
       return sp;
     }
   }
-  auto model_opt = kvd::LightGbmModel::load_from_file(path);
+  auto model_opt = kvd::LightGbmModel::load_from_file(runtime_path);
   if (!model_opt) {
     return {};
   }
   auto sp = std::make_shared<kvd::LightGbmModel>(std::move(*model_opt));
-  cache[path] = sp;
+  cache[runtime_path] = sp;
   return sp;
 }
 
@@ -747,11 +788,12 @@ int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_
       int rc = write_error("model_main_missing");
       return rc == 0 ? KVD_MODEL_ERR_MAIN_MISSING : rc;
     }
-    if (!path_exists(cfg.model_path)) {
+    std::string runtime_model_path = resolve_lightgbm_runtime_path(cfg.model_path);
+    if (!path_exists(runtime_model_path)) {
       int rc = write_error("model_main_missing");
       return rc == 0 ? KVD_MODEL_ERR_MAIN_MISSING : rc;
     }
-    if (!kvd::LightGbmModel::load_from_file(cfg.model_path)) {
+    if (!kvd::LightGbmModel::load_from_file(runtime_model_path)) {
       int rc = write_error("model_main_invalid");
       return rc == 0 ? KVD_MODEL_ERR_MAIN_INVALID : rc;
     }
@@ -764,22 +806,24 @@ int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_
     }
 
     if (has_normal) {
-      if (!path_exists(cfg.model_normal_path)) {
+      std::string runtime_model_normal_path = resolve_lightgbm_runtime_path(cfg.model_normal_path);
+      if (!path_exists(runtime_model_normal_path)) {
         int rc = write_error("model_normal_missing");
         return rc == 0 ? KVD_MODEL_ERR_NORMAL_MISSING : rc;
       }
-      if (!kvd::LightGbmModel::load_from_file(cfg.model_normal_path)) {
+      if (!kvd::LightGbmModel::load_from_file(runtime_model_normal_path)) {
         int rc = write_error("model_normal_invalid");
         return rc == 0 ? KVD_MODEL_ERR_NORMAL_INVALID : rc;
       }
     }
 
     if (has_packed) {
-      if (!path_exists(cfg.model_packed_path)) {
+      std::string runtime_model_packed_path = resolve_lightgbm_runtime_path(cfg.model_packed_path);
+      if (!path_exists(runtime_model_packed_path)) {
         int rc = write_error("model_packed_missing");
         return rc == 0 ? KVD_MODEL_ERR_PACKED_MISSING : rc;
       }
-      if (!kvd::LightGbmModel::load_from_file(cfg.model_packed_path)) {
+      if (!kvd::LightGbmModel::load_from_file(runtime_model_packed_path)) {
         int rc = write_error("model_packed_invalid");
         return rc == 0 ? KVD_MODEL_ERR_PACKED_INVALID : rc;
       }
