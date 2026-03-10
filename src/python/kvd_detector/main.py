@@ -542,19 +542,26 @@ from config.config import BYTE_HISTOGRAM_BINS, STAT_CHUNK_COUNT
 
 def extract_statistical_features(byte_sequence, pe_features, orig_length=None):
     if orig_length is not None and orig_length >= 0:
-        byte_array = np.array(byte_sequence[:orig_length], dtype=np.uint8)
+        byte_array = np.asarray(byte_sequence[:orig_length], dtype=np.uint8)
     else:
-        byte_array = np.array(byte_sequence, dtype=np.uint8)
+        byte_array = np.asarray(byte_sequence, dtype=np.uint8)
     length = len(byte_array)
     features = []
+    counts = np.bincount(byte_array, minlength=256) if length > 0 else np.zeros(256, dtype=np.int64)
     if length > 0:
-        mean_val = float(np.mean(byte_array))
-        std_val = float(np.std(byte_array))
-        min_val = float(np.min(byte_array))
-        max_val = float(np.max(byte_array))
-        median_val = float(np.median(byte_array))
-        q25 = float(np.percentile(byte_array, 25))
-        q75 = float(np.percentile(byte_array, 75))
+        value_axis = np.arange(256, dtype=np.float64)
+        weighted_sum = float(np.dot(counts, value_axis))
+        mean_val = weighted_sum / float(length)
+        weighted_sq_sum = float(np.dot(counts, value_axis * value_axis))
+        variance = max(0.0, weighted_sq_sum / float(length) - mean_val * mean_val)
+        std_val = float(np.sqrt(variance))
+        nonzero_indices = np.flatnonzero(counts)
+        min_val = float(nonzero_indices[0]) if nonzero_indices.size > 0 else 0.0
+        max_val = float(nonzero_indices[-1]) if nonzero_indices.size > 0 else 0.0
+        cdf = np.cumsum(counts)
+        median_val = float(np.searchsorted(cdf, int(np.ceil(0.50 * length))))
+        q25 = float(np.searchsorted(cdf, int(np.ceil(0.25 * length))))
+        q75 = float(np.searchsorted(cdf, int(np.ceil(0.75 * length))))
     else:
         mean_val = 0.0
         std_val = 0.0
@@ -565,12 +572,11 @@ def extract_statistical_features(byte_sequence, pe_features, orig_length=None):
         q75 = 0.0
     features.extend([mean_val, std_val, min_val, max_val, median_val, q25, q75])
     features.extend([
-        int(np.sum(byte_array == 0)),
-        int(np.sum(byte_array == 255)),
-        int(np.sum(byte_array == 0x90)),
-        int(np.sum((byte_array >= 32) & (byte_array <= 126))),
+        int(counts[0]),
+        int(counts[255]),
+        int(counts[0x90]),
+        int(np.sum(counts[32:127])),
     ])
-    counts = np.bincount(byte_array, minlength=256) if length > 0 else np.zeros(256, dtype=np.int64)
     p = counts.astype(np.float64) / float(length) if length > 0 else np.zeros_like(counts, dtype=np.float64)
     p = p[p > 0]
     entropy = float((-np.sum(p * np.log2(p)) / 8.0) if p.size > 0 else 0.0)
@@ -2427,8 +2433,30 @@ from config.config import DEFAULT_MAX_FILE_SIZE, PE_FEATURE_VECTOR_DIM
 
 RAW_EXTRACT_WRITE_WORKERS = 16
 RAW_EXTRACT_COMPRESS_NPZ = False
+RAW_EXTRACT_CACHE_BACKFILL = True
+RAW_EXTRACT_CACHE_KEY = 'stat_features'
 
-def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, fast_dev_run=False):
+def _save_npz_with_stat_cache(file_path, byte_sequence, pe_features, orig_length, stat_features, compress=False):
+    tmp_file = f"{file_path}.tmp.npz"
+    if compress:
+        np.savez_compressed(
+            tmp_file,
+            byte_sequence=byte_sequence,
+            pe_features=pe_features,
+            orig_length=int(orig_length),
+            stat_features=stat_features.astype(np.float32, copy=False),
+        )
+    else:
+        np.savez(
+            tmp_file,
+            byte_sequence=byte_sequence,
+            pe_features=pe_features,
+            orig_length=int(orig_length),
+            stat_features=stat_features.astype(np.float32, copy=False),
+        )
+    os.replace(tmp_file, file_path)
+
+def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, fast_dev_run=False, max_workers=16):
     print("[*] Loading dataset...")
     with open(metadata_file, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
@@ -2467,16 +2495,47 @@ def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, f
     features_list = []
     labels_list = []
     valid_files = []
-    dataset = MalwareDataset(data_dir, all_files, all_labels, max_file_size)
-    total_samples = len(dataset)
+    total_samples = len(all_files)
     progress_desc = "Extracting features"
     from config.config import PE_FEATURE_VECTOR_DIM
     count_ok = 0
     count_padded = 0
     count_truncated = 0
-    for i in tqdm(range(total_samples), desc=progress_desc):
+    count_cache_hit = 0
+    count_cache_write = 0
+    effective_workers = int(max(1, max_workers))
+    def _process_sample(i):
         try:
-            byte_sequence, pe_features, label, orig_length = dataset[i]
+            filename = all_files[i]
+            label = all_labels[i]
+            file_path = os.path.join(data_dir, filename) if filename.endswith('.npz') else os.path.join(data_dir, f"{filename}.npz")
+            cache_features = None
+            try:
+                with np.load(file_path) as data:
+                    byte_sequence = data['byte_sequence']
+                    if 'pe_features' in data:
+                        pe_features = data['pe_features']
+                        if pe_features.ndim > 1:
+                            pe_features = pe_features.flatten()
+                    else:
+                        pe_features = np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32)
+                    orig_length = int(data['orig_length']) if 'orig_length' in data else max_file_size
+                    if RAW_EXTRACT_CACHE_KEY in data:
+                        cache_features = np.asarray(data[RAW_EXTRACT_CACHE_KEY], dtype=np.float32).flatten()
+            except FileNotFoundError:
+                byte_sequence = np.zeros(max_file_size, dtype=np.uint8)
+                pe_features = np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32)
+                orig_length = 0
+                cache_features = None
+            except Exception:
+                byte_sequence = np.zeros(max_file_size, dtype=np.uint8)
+                pe_features = np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32)
+                orig_length = 0
+                cache_features = None
+            if len(byte_sequence) > max_file_size:
+                byte_sequence = byte_sequence[:max_file_size]
+            else:
+                byte_sequence = np.pad(byte_sequence, (0, max_file_size - len(byte_sequence)), 'constant')
             orig_pe_len = len(pe_features)
             status = 'ok'
             if orig_pe_len != PE_FEATURE_VECTOR_DIM:
@@ -2485,19 +2544,49 @@ def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, f
                 fixed_pe_features[:copy_len] = pe_features[:copy_len]
                 pe_features = fixed_pe_features
                 status = 'padded' if orig_pe_len < PE_FEATURE_VECTOR_DIM else 'truncated'
-            if status == 'ok':
-                count_ok += 1
-            elif status == 'padded':
-                count_padded += 1
-            else:
-                count_truncated += 1
+            if cache_features is not None and cache_features.size > 0:
+                return i, cache_features, label, status, None, True, False
             features = extract_statistical_features(byte_sequence, pe_features, orig_length)
-            features_list.append(features)
-            labels_list.append(label)
-            valid_files.append(all_files[i])
+            cache_written = False
+            if RAW_EXTRACT_CACHE_BACKFILL and os.path.isfile(file_path):
+                try:
+                    _save_npz_with_stat_cache(
+                        file_path,
+                        byte_sequence=byte_sequence,
+                        pe_features=pe_features,
+                        orig_length=orig_length,
+                        stat_features=features,
+                        compress=RAW_EXTRACT_COMPRESS_NPZ,
+                    )
+                    cache_written = True
+                except Exception:
+                    cache_written = False
+            return i, features, label, status, None, False, cache_written
         except Exception as e:
-            print(f"[!] Error processing file {all_files[i]}: {e}")
-            continue
+            return i, None, None, None, e, False, False
+    if total_samples > 0:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(effective_workers, total_samples)) as executor:
+            for i, features, label, status, error, cache_hit, cache_written in tqdm(
+                executor.map(_process_sample, range(total_samples)),
+                total=total_samples,
+                desc=progress_desc
+            ):
+                if error is not None:
+                    print(f"[!] Error processing file {all_files[i]}: {error}")
+                    continue
+                if cache_hit:
+                    count_cache_hit += 1
+                if cache_written:
+                    count_cache_write += 1
+                if status == 'ok':
+                    count_ok += 1
+                elif status == 'padded':
+                    count_padded += 1
+                else:
+                    count_truncated += 1
+                features_list.append(features)
+                labels_list.append(label)
+                valid_files.append(all_files[i])
     try:
         X = np.array(features_list, dtype=np.float32)
     except ValueError as e:
@@ -2516,6 +2605,7 @@ def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, f
     y = np.array(labels_list)
     print(f"[+] Feature extraction completed, feature dimension: {X.shape[1]}")
     print(f"[+] Valid samples: {X.shape[0]}")
+    print(f"[+] 统计特征缓存：hit={count_cache_hit}，backfill={count_cache_write}")
     try:
         total = count_ok + count_padded + count_truncated
         if total > 0:
@@ -2611,12 +2701,14 @@ def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_
             if idx >= len(batch_status) or batch_status[idx] != 0:
                 raise Exception("skip_unparsable_pe")
             pe_features = batch_pe_features[idx]
+            stat_features = extract_statistical_features(byte_sequence, pe_features, orig_length)
             if compress_npz:
                 np.savez_compressed(
                     output_file,
                     byte_sequence=byte_sequence,
                     pe_features=pe_features,
                     orig_length=orig_length,
+                    stat_features=stat_features,
                 )
             else:
                 np.savez(
@@ -2624,6 +2716,7 @@ def extract_features_from_raw_files(data_dir, output_dir, max_file_size=DEFAULT_
                     byte_sequence=byte_sequence,
                     pe_features=pe_features,
                     orig_length=orig_length,
+                    stat_features=stat_features,
                 )
             return output_file, batch_labels[idx]
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(write_workers, len(batch_inputs))) as executor:
@@ -2721,6 +2814,7 @@ def load_incremental_dataset(data_dir, max_file_size=DEFAULT_MAX_FILE_SIZE):
                 else:
                     pe_features = np.zeros(PE_FEATURE_VECTOR_DIM, dtype=np.float32)
                 orig_length = data['orig_length'] if 'orig_length' in data else max_file_size
+                cache_features = np.asarray(data[RAW_EXTRACT_CACHE_KEY], dtype=np.float32).flatten() if RAW_EXTRACT_CACHE_KEY in data else None
             if len(byte_sequence) > max_file_size:
                 byte_sequence = byte_sequence[:max_file_size]
             else:
@@ -2739,7 +2833,22 @@ def load_incremental_dataset(data_dir, max_file_size=DEFAULT_MAX_FILE_SIZE):
                 count_padded += 1
             else:
                 count_truncated += 1
-            features = extract_statistical_features(byte_sequence, pe_features, int(orig_length))
+            if cache_features is not None and cache_features.size > 0:
+                features = cache_features
+            else:
+                features = extract_statistical_features(byte_sequence, pe_features, int(orig_length))
+                if RAW_EXTRACT_CACHE_BACKFILL:
+                    try:
+                        _save_npz_with_stat_cache(
+                            file_path,
+                            byte_sequence=byte_sequence,
+                            pe_features=pe_features,
+                            orig_length=orig_length,
+                            stat_features=features,
+                            compress=RAW_EXTRACT_COMPRESS_NPZ,
+                        )
+                    except Exception:
+                        pass
             features_list.append(features)
             valid_file_names.append(file_names[i])
         except Exception as e:
