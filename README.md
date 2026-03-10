@@ -175,7 +175,6 @@ python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resour
 | model_normal_path | const char* | normal 路由模型路径 |
 | model_packed_path | const char* | packed 路由模型路径 |
 | family_classifier_json_path | const char* | 家族分类器 JSON 路径 |
-| hardcase_manifest_path | const char* | hardcase C++ manifest 路径（可选） |
 | allowed_scan_root | const char* | 允许扫描的根目录 |
 | max_file_size | unsigned int | 最大读取文件大小 |
 | prediction_threshold | float | 恶意判定阈值 |
@@ -195,10 +194,6 @@ python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resour
 | -16 | packed 模型无效 |
 | -17 | 家族分类器缺失 |
 | -18 | 家族分类器无效 |
-| -19 | hardcase manifest 缺失 |
-| -20 | hardcase manifest 无效 |
-| -21 | hardcase 子模型缺失 |
-| -22 | hardcase 子模型无效 |
 | -100 | 内存分配失败 |
 
 扫描结果 JSON 典型字段：
@@ -209,9 +204,6 @@ python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resour
   "confidence": 0.98,
   "axon_malware": true,
   "axon_score": 0.96,
-  "hardcase_triggered": false,
-  "hardcase_class": "hard_samples",
-  "hardcase_scores": [0.71, 0.18, 0.11],
   "signature_hit": false,
   "signature_score": 0.0,
   "signature_reason": "",
@@ -239,25 +231,39 @@ int main() {
   using kvd_create_fn = kvd_handle* (KVD_CALL*)(const kvd_config*);
   using kvd_destroy_fn = void (KVD_CALL*)(kvd_handle*);
   using kvd_scan_path_fn = int (KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
+  using kvd_validate_models_fn = int (KVD_CALL*)(const kvd_config*, char**, size_t*);
   using kvd_free_fn = void (KVD_CALL*)(char*);
 
   auto kvd_create_p = reinterpret_cast<kvd_create_fn>(GetProcAddress(mod, "kvd_create"));
   auto kvd_destroy_p = reinterpret_cast<kvd_destroy_fn>(GetProcAddress(mod, "kvd_destroy"));
   auto kvd_scan_path_p = reinterpret_cast<kvd_scan_path_fn>(GetProcAddress(mod, "kvd_scan_path"));
+  auto kvd_validate_models_p = reinterpret_cast<kvd_validate_models_fn>(GetProcAddress(mod, "kvd_validate_models"));
   auto kvd_free_p = reinterpret_cast<kvd_free_fn>(GetProcAddress(mod, "kvd_free"));
-  if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_free_p) return 2;
+  if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_validate_models_p || !kvd_free_p) return 2;
 
   kvd_config cfg{};
   cfg.model_path = "resources/weights_cluster_eval/weights/lightgbm_model.txt";
   cfg.model_normal_path = "resources/weights_cluster_eval/weights/lightgbm_model_normal.txt";
   cfg.model_packed_path = "resources/weights_cluster_eval/weights/lightgbm_model_packed.txt";
   cfg.family_classifier_json_path = "resources/weights_cluster_eval/cluster/family_classifier.json";
-  cfg.hardcase_manifest_path = "resources/weights_cluster_eval/weights/hardcase_cxx_manifest.json";
   cfg.prediction_threshold = 0.5f;
   cfg.max_file_size = 65536;
 
+  char* err = nullptr;
+  size_t err_len = 0;
+  int check = kvd_validate_models_p(&cfg, &err, &err_len);
+  if (check != 0) {
+    if (err && err_len > 0) {
+      std::cerr.write(err, static_cast<std::streamsize>(err_len));
+      std::cerr << std::endl;
+      kvd_free_p(err);
+    }
+    return 3;
+  }
+  if (err) kvd_free_p(err);
+
   kvd_handle* h = kvd_create_p(&cfg);
-  if (!h) return 3;
+  if (!h) return 4;
 
   char* out_json = nullptr;
   size_t out_len = 0;
@@ -269,7 +275,7 @@ int main() {
   }
 
   kvd_destroy_p(h);
-  return rc == 0 ? 0 : 4;
+  return rc == 0 ? 0 : 5;
 }
 ```
 
@@ -285,7 +291,6 @@ class KvdConfig(ctypes.Structure):
         ("model_normal_path", ctypes.c_char_p),
         ("model_packed_path", ctypes.c_char_p),
         ("family_classifier_json_path", ctypes.c_char_p),
-        ("hardcase_manifest_path", ctypes.c_char_p),
         ("allowed_scan_root", ctypes.c_char_p),
         ("max_file_size", ctypes.c_uint),
         ("prediction_threshold", ctypes.c_float),
@@ -294,6 +299,8 @@ class KvdConfig(ctypes.Structure):
 dll = ctypes.CDLL("axon_engine.dll")
 dll.kvd_create.argtypes = [ctypes.POINTER(KvdConfig)]
 dll.kvd_create.restype = ctypes.c_void_p
+dll.kvd_validate_models.argtypes = [ctypes.POINTER(KvdConfig), ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+dll.kvd_validate_models.restype = ctypes.c_int
 dll.kvd_destroy.argtypes = [ctypes.c_void_p]
 dll.kvd_scan_path.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
 dll.kvd_scan_path.restype = ctypes.c_int
@@ -304,11 +311,23 @@ cfg = KvdConfig(
     model_normal_path=b"resources/weights_cluster_eval/weights/lightgbm_model_normal.txt",
     model_packed_path=b"resources/weights_cluster_eval/weights/lightgbm_model_packed.txt",
     family_classifier_json_path=b"resources/weights_cluster_eval/cluster/family_classifier.json",
-    hardcase_manifest_path=b"resources/weights_cluster_eval/weights/hardcase_cxx_manifest.json",
     allowed_scan_root=None,
     max_file_size=65536,
     prediction_threshold=0.5,
 )
+
+err = ctypes.c_char_p()
+err_len = ctypes.c_size_t()
+check = dll.kvd_validate_models(ctypes.byref(cfg), ctypes.byref(err), ctypes.byref(err_len))
+if check != 0:
+    try:
+        msg = ctypes.string_at(err, err_len.value).decode("utf-8") if err.value else f"rc={check}"
+    finally:
+        if err.value:
+            dll.kvd_free(err)
+    raise RuntimeError(f"kvd_validate_models failed: {msg}")
+if err.value:
+    dll.kvd_free(err)
 
 h = dll.kvd_create(ctypes.byref(cfg))
 if not h:
@@ -352,7 +371,6 @@ const KvdConfig = Struct({
   model_normal_path: charPtr,
   model_packed_path: charPtr,
   family_classifier_json_path: charPtr,
-  hardcase_manifest_path: charPtr,
   allowed_scan_root: charPtr,
   max_file_size: ref.types.uint,
   prediction_threshold: ref.types.float
@@ -360,6 +378,7 @@ const KvdConfig = Struct({
 
 const kvd = ffi.Library('axon_engine', {
   kvd_create: [voidPtr, [ref.refType(KvdConfig)]],
+  kvd_validate_models: ['int', [ref.refType(KvdConfig), charPtrPtr, sizeTPtr]],
   kvd_destroy: ['void', [voidPtr]],
   kvd_scan_path: ['int', [voidPtr, 'string', charPtrPtr, sizeTPtr]],
   kvd_free: ['void', [charPtr]]
@@ -370,11 +389,22 @@ const cfg = new KvdConfig({
   model_normal_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_normal.txt\0'),
   model_packed_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_packed.txt\0'),
   family_classifier_json_path: Buffer.from('resources/weights_cluster_eval/cluster/family_classifier.json\0'),
-  hardcase_manifest_path: Buffer.from('resources/weights_cluster_eval/weights/hardcase_cxx_manifest.json\0'),
   allowed_scan_root: ref.NULL,
   max_file_size: 65536,
   prediction_threshold: 0.5
 })
+
+const errPtr = ref.alloc(charPtr)
+const errLen = ref.alloc(ref.types.size_t)
+const check = kvd.kvd_validate_models(cfg.ref(), errPtr, errLen)
+if (check !== 0) {
+  const p = errPtr.deref()
+  const msg = ref.isNull(p) ? `rc=${check}` : ref.readCString(p, 0)
+  if (!ref.isNull(p)) kvd.kvd_free(p)
+  throw new Error(`kvd_validate_models failed: ${msg}`)
+}
+const maybeErr = errPtr.deref()
+if (!ref.isNull(maybeErr)) kvd.kvd_free(maybeErr)
 
 const handle = kvd.kvd_create(cfg.ref())
 if (ref.isNull(handle)) {
