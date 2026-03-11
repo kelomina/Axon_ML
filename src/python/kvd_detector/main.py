@@ -19,6 +19,9 @@ import re
 import sys
 import importlib.abc
 import importlib.util
+import json
+import ctypes
+import csv
 
 _EMBEDDED_SOURCES = {}
 _EMBEDDED_PACKAGES = set()
@@ -8867,11 +8870,11 @@ _install_embedded_importer()
 from config.config import (
     MODEL_PATH, FAMILY_CLASSIFIER_PATH, FEATURES_PKL_PATH, PROCESSED_DATA_DIR, METADATA_FILE,
     SAVED_MODEL_DIR, RESOURCES_DIR, THRESHOLD_REPORT_PATH, ROUTING_EVAL_REPORT_PATH,
-    BENIGN_SAMPLES_DIR, MALICIOUS_SAMPLES_DIR,
+    BENIGN_SAMPLES_DIR, MALICIOUS_SAMPLES_DIR, PROJECT_ROOT,
     DEFAULT_MAX_FILE_SIZE, DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS,
     DEFAULT_INCREMENTAL_EARLY_STOPPING, DEFAULT_MAX_FINETUNE_ITERATIONS,
     DEFAULT_MIN_CLUSTER_SIZE, DEFAULT_MIN_SAMPLES, DEFAULT_MIN_FAMILY_SIZE,
-    DEFAULT_TREAT_NOISE_AS_FAMILY,
+    DEFAULT_TREAT_NOISE_AS_FAMILY, PREDICTION_THRESHOLD, ENV_ALLOWED_SCAN_ROOT,
     SCAN_CACHE_PATH, SCAN_OUTPUT_DIR, HDBSCAN_SAVE_DIR,
     HELP_MAX_FILE_SIZE, HELP_FAST_DEV_RUN, HELP_SAVE_FEATURES,
     HELP_FINETUNE_ON_FALSE_POSITIVES, HELP_INCREMENTAL_TRAINING,
@@ -8896,6 +8899,173 @@ def _serve_ipc_only() -> str:
     asyncio.run(scanner_service.run_ipc_forever())
     logger.debug('IPC服务流程结束')
     return 'ipc'
+
+_KVD_SCAN_DLL = None
+_KVD_SCAN_DLL_READY = False
+
+class _KvdConfig(ctypes.Structure):
+    _fields_ = [
+        ("model_path", ctypes.c_char_p),
+        ("model_normal_path", ctypes.c_char_p),
+        ("model_packed_path", ctypes.c_char_p),
+        ("family_classifier_json_path", ctypes.c_char_p),
+        ("allowed_scan_root", ctypes.c_char_p),
+        ("max_file_size", ctypes.c_uint),
+        ("prediction_threshold", ctypes.c_float),
+    ]
+
+def _scan_dll_candidates():
+    env_path = os.getenv('KVD_SCAN_DLL')
+    base_dir = PROJECT_ROOT if PROJECT_ROOT else os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    return [
+        env_path,
+        os.path.join(base_dir, 'build-vcpkg', 'bin', 'Release', 'axon_engine.dll'),
+        os.path.join(base_dir, 'build-vcpkg', 'bin', 'Debug', 'axon_engine.dll'),
+        os.path.join(base_dir, 'build-vcpkg', 'bin', 'RelWithDebInfo', 'axon_engine.dll'),
+        os.path.join(base_dir, 'build-vcpkg', 'bin', 'MinSizeRel', 'axon_engine.dll'),
+        os.path.join(base_dir, 'build', 'Release', 'axon_engine.dll'),
+        os.path.join(base_dir, 'build', 'Debug', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'build', 'bin', 'Release', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'build', 'bin', 'Debug', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'build', 'src', 'Release', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'build', 'src', 'Debug', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'kvd_core', 'build', 'bin', 'Release', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'kvd_core', 'build', 'bin', 'Debug', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'kvd_core', 'build', 'src', 'Release', 'axon_engine.dll'),
+        os.path.join(base_dir, 'src', 'cpp', 'kvd_core', 'build', 'src', 'Debug', 'axon_engine.dll'),
+        os.path.join(os.path.dirname(__file__), 'axon_engine.dll'),
+    ]
+
+def _load_kvd_scan_dll():
+    global _KVD_SCAN_DLL, _KVD_SCAN_DLL_READY
+    if _KVD_SCAN_DLL_READY:
+        return _KVD_SCAN_DLL
+    for candidate in _scan_dll_candidates():
+        if not candidate:
+            continue
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            dll = ctypes.CDLL(candidate)
+            dll.kvd_create.argtypes = [ctypes.POINTER(_KvdConfig)]
+            dll.kvd_create.restype = ctypes.c_void_p
+            dll.kvd_destroy.argtypes = [ctypes.c_void_p]
+            dll.kvd_destroy.restype = None
+            dll.kvd_free.argtypes = [ctypes.c_char_p]
+            dll.kvd_free.restype = None
+            dll.kvd_scan_path.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+            dll.kvd_scan_path.restype = ctypes.c_int
+            if hasattr(dll, 'kvd_scan_paths'):
+                dll.kvd_scan_paths.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p), ctypes.c_size_t, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+                dll.kvd_scan_paths.restype = ctypes.c_int
+            _KVD_SCAN_DLL = dll
+            _KVD_SCAN_DLL_READY = True
+            return _KVD_SCAN_DLL
+        except Exception:
+            continue
+    _KVD_SCAN_DLL_READY = True
+    return None
+
+def _build_kvd_config(model_path, family_classifier_path, max_file_size):
+    allowed_root = os.getenv(ENV_ALLOWED_SCAN_ROOT)
+    return _KvdConfig(
+        model_path=model_path.encode('utf-8') if model_path else None,
+        model_normal_path=None,
+        model_packed_path=None,
+        family_classifier_json_path=family_classifier_path.encode('utf-8') if family_classifier_path else None,
+        allowed_scan_root=allowed_root.encode('utf-8') if allowed_root else None,
+        max_file_size=int(max_file_size) if max_file_size else 0,
+        prediction_threshold=float(PREDICTION_THRESHOLD) if PREDICTION_THRESHOLD else 0.0,
+    )
+
+def _kvd_scan_path(dll, handle, path):
+    out_json = ctypes.c_char_p()
+    out_len = ctypes.c_size_t()
+    rc = dll.kvd_scan_path(handle, path.encode('utf-8'), ctypes.byref(out_json), ctypes.byref(out_len))
+    if rc != 0:
+        raise RuntimeError(f'kvd_scan_path failed: {rc}')
+    raw = ctypes.string_at(out_json, out_len.value) if out_json.value else b''
+    if out_json.value:
+        dll.kvd_free(out_json)
+    if not raw:
+        return {}
+    return json.loads(raw.decode('utf-8'))
+
+def _kvd_scan_paths(dll, handle, paths):
+    encoded = [p.encode('utf-8') if p else None for p in paths]
+    array_type = ctypes.c_char_p * len(encoded)
+    out_json = ctypes.c_char_p()
+    out_len = ctypes.c_size_t()
+    rc = dll.kvd_scan_paths(handle, array_type(*encoded), len(encoded), ctypes.byref(out_json), ctypes.byref(out_len))
+    if rc != 0:
+        raise RuntimeError(f'kvd_scan_paths failed: {rc}')
+    raw = ctypes.string_at(out_json, out_len.value) if out_json.value else b''
+    if out_json.value:
+        dll.kvd_free(out_json)
+    if not raw:
+        return []
+    data = json.loads(raw.decode('utf-8'))
+    if isinstance(data, list):
+        return data
+    return [data]
+
+def _collect_scan_paths(directory_path, recursive):
+    results = []
+    if recursive:
+        for root, _, files in os.walk(directory_path):
+            for name in files:
+                results.append(os.path.join(root, name))
+    else:
+        with os.scandir(directory_path) as it:
+            for entry in it:
+                if entry.is_file():
+                    results.append(entry.path)
+    return results
+
+def _enrich_scan_results(results, paths):
+    enriched = []
+    for idx, path in enumerate(paths):
+        base = results[idx] if idx < len(results) and isinstance(results[idx], dict) else {}
+        item = dict(base)
+        if 'file_path' not in item:
+            item['file_path'] = os.path.abspath(path)
+        if 'file_name' not in item:
+            item['file_name'] = os.path.basename(path)
+        if 'file_size' not in item:
+            try:
+                item['file_size'] = int(os.path.getsize(path))
+            except Exception:
+                item['file_size'] = 0
+        enriched.append(item)
+    return enriched
+
+def _save_scan_results(results, output_path, logger):
+    json_path = output_path + '.json'
+    json_dir = os.path.dirname(json_path)
+    if json_dir:
+        os.makedirs(json_dir, exist_ok=True)
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    logger.info(f'扫描结果已保存: {json_path}')
+
+    csv_path = output_path + '.csv'
+    csv_dir = os.path.dirname(csv_path)
+    if csv_dir:
+        os.makedirs(csv_dir, exist_ok=True)
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        if results:
+            fieldnames = ['file_path', 'file_name', 'file_size', 'is_malware', 'confidence']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for result in results:
+                writer.writerow({
+                    'file_path': result.get('file_path', ''),
+                    'file_name': result.get('file_name', ''),
+                    'file_size': result.get('file_size', 0),
+                    'is_malware': result.get('is_malware', False),
+                    'confidence': result.get('confidence', 0.0),
+                })
+    logger.info(f'扫描结果已保存: {csv_path}')
 
 def _build_feature_name_map(model, feature_columns):
     import re
@@ -9646,31 +9816,46 @@ def main():
             logger.error(f'微调失败: {e}')
             raise
     elif args.command == 'scan':
-        import scanner
         try:
-            scanner_instance = scanner.MalwareScanner(
-                lightgbm_model_path=args.lightgbm_model_path,
-                family_classifier_path=args.family_classifier_path,
-                max_file_size=args.max_file_size,
-                cache_file=args.cache_file,
-                enable_cache=True,
-            )
-            results = []
             if args.file_path:
-                result = scanner_instance.scan_file(args.file_path)
-                if result is not None:
-                    results.append(result)
+                if not os.path.exists(args.file_path):
+                    logger.error(f'文件不存在: {args.file_path}')
+                    return
+                paths = [args.file_path]
             elif args.dir_path:
-                results = scanner_instance.scan_directory(args.dir_path, args.recursive)
+                if not os.path.exists(args.dir_path):
+                    logger.error(f'目录不存在: {args.dir_path}')
+                    return
+                paths = _collect_scan_paths(args.dir_path, args.recursive)
             else:
                 logger.error('请指定 --file-path 或 --dir-path')
                 return
-            scanner_instance.save_results(results, args.output_path)
-            malicious_paths = [r['file_path'] for r in results if r.get('is_malware')]
-            os.makedirs(os.path.dirname(DETECTED_MALICIOUS_PATHS_REPORT_PATH), exist_ok=True)
+            dll = _load_kvd_scan_dll()
+            if dll is None:
+                raise RuntimeError('未找到可用的扫描DLL')
+            cfg = _build_kvd_config(args.lightgbm_model_path, args.family_classifier_path, args.max_file_size)
+            handle = dll.kvd_create(ctypes.byref(cfg))
+            if not handle:
+                raise RuntimeError('kvd_create failed')
+            try:
+                if not paths:
+                    results = []
+                elif hasattr(dll, 'kvd_scan_paths') and len(paths) > 1:
+                    results = _kvd_scan_paths(dll, handle, paths)
+                else:
+                    results = [_kvd_scan_path(dll, handle, p) for p in paths]
+            finally:
+                dll.kvd_destroy(handle)
+            results = _enrich_scan_results(results, paths)
+            _save_scan_results(results, args.output_path, logger)
+            malicious_paths = [r.get('file_path') for r in results if r.get('is_malware')]
+            report_dir = os.path.dirname(DETECTED_MALICIOUS_PATHS_REPORT_PATH)
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
             with open(DETECTED_MALICIOUS_PATHS_REPORT_PATH, 'w', encoding='utf-8') as f:
                 for p in malicious_paths:
-                    f.write(p + '\n')
+                    if p:
+                        f.write(p + '\n')
             logger.info(f'恶意样本路径已保存: {DETECTED_MALICIOUS_PATHS_REPORT_PATH}，数量: {len(malicious_paths)}')
         except Exception as e:
             logger.error(f'扫描失败: {e}')
