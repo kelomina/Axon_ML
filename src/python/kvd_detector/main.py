@@ -9174,9 +9174,10 @@ def _export_train_all_sample_reports(logger):
         if os.path.exists(FEATURE_SCALER_PATH):
             with open(FEATURE_SCALER_PATH, 'rb') as f:
                 export_scaler = pickle.load(f)
-            X = export_scaler.transform(X)
+            X_scaled = export_scaler.transform(X)
             logger.info(f'样本导出使用标准化器: {FEATURE_SCALER_PATH}')
         else:
+            X_scaled = X
             logger.warning(f'样本导出未找到标准化器，使用原始特征: {FEATURE_SCALER_PATH}')
 
         train_model_path = MODEL_PATH
@@ -9189,45 +9190,58 @@ def _export_train_all_sample_reports(logger):
                 train_model_path = fallback if os.path.exists(fallback) else train_model_path
         model = lgb.Booster(model_file=train_model_path)
         best_iteration = getattr(model, 'best_iteration', None)
-        if isinstance(best_iteration, int) and best_iteration > 0:
-            y_pred_proba = model.predict(X, num_iteration=best_iteration)
-        else:
-            y_pred_proba = model.predict(X)
-        y_pred = (y_pred_proba > PREDICTION_THRESHOLD).astype(int)
-        confidence = np.maximum(y_pred_proba, 1 - y_pred_proba)
-        hard_mask = confidence < confidence_threshold
-        false_positive_mask = (y_true == 0) & (y_pred == 1)
-        false_negative_mask = (y_true == 1) & (y_pred == 0)
-        full_hard_count = int(np.sum(hard_mask))
-        full_fp_count = int(np.sum(false_positive_mask))
-        full_fn_count = int(np.sum(false_negative_mask))
 
         total_count = len(y_true)
         all_indices = np.arange(total_count)
         if total_count > 10:
             stratify_label = y_true if len(np.unique(y_true)) > 1 else None
-            idx_temp, idx_test, y_temp, _, _, _ = train_test_split(
+            idx_temp, idx_test, y_temp, y_test, sample_ids_temp, sample_ids_test = train_test_split(
                 all_indices, y_true, sample_ids, test_size=DEFAULT_TEST_SIZE,
                 random_state=DEFAULT_RANDOM_STATE, stratify=stratify_label
             )
             if len(idx_temp) > 5:
                 stratify_temp = y_temp if len(np.unique(y_temp)) > 1 else None
-                _, _, _, _, _, _ = train_test_split(
-                    idx_temp, y_temp, [sample_ids[i] for i in idx_temp], test_size=DEFAULT_VAL_SIZE,
+                idx_train, idx_val, y_train, y_val, sample_ids_train, sample_ids_val = train_test_split(
+                    idx_temp, y_temp, sample_ids_temp, test_size=DEFAULT_VAL_SIZE,
                     random_state=DEFAULT_RANDOM_STATE, stratify=stratify_temp
                 )
+            else:
+                idx_train = idx_val = idx_temp
+                y_train = y_val = y_temp
+                sample_ids_train = sample_ids_val = sample_ids_temp
         else:
             idx_test = all_indices
+            idx_train = idx_val = all_indices
+            y_test = y_train = y_val = y_true
+            sample_ids_test = sample_ids_train = sample_ids_val = sample_ids
+
         test_mask = np.zeros(total_count, dtype=bool)
         test_mask[idx_test] = True
-        test_hard_count = int(np.sum(hard_mask & test_mask))
-        test_fp_count = int(np.sum(false_positive_mask & test_mask))
-        test_fn_count = int(np.sum(false_negative_mask & test_mask))
+
+        full_y_pred_proba = model.predict(X_scaled, num_iteration=best_iteration) if isinstance(best_iteration, int) and best_iteration > 0 else model.predict(X_scaled)
+        y_test_pred_proba = full_y_pred_proba[idx_test]
+        y_test_pred = (y_test_pred_proba > PREDICTION_THRESHOLD).astype(int)
+        confidence_test = np.maximum(y_test_pred_proba, 1 - y_test_pred_proba)
+        hard_mask_test = confidence_test < confidence_threshold
+        false_positive_mask_test = (y_test == 0) & (y_test_pred == 1)
+        false_negative_mask_test = (y_test == 1) & (y_test_pred == 0)
+        test_hard_count = int(np.sum(hard_mask_test))
+        test_fp_count = int(np.sum(false_positive_mask_test))
+        test_fn_count = int(np.sum(false_negative_mask_test))
+
+        full_y_pred = (full_y_pred_proba > PREDICTION_THRESHOLD).astype(int)
+        full_confidence = np.maximum(full_y_pred_proba, 1 - full_y_pred_proba)
+        full_hard_mask = full_confidence < confidence_threshold
+        full_false_positive_mask = (y_true == 0) & (full_y_pred == 1)
+        full_false_negative_mask = (y_true == 1) & (full_y_pred == 0)
+        full_hard_count = int(np.sum(full_hard_mask))
+        full_fp_count = int(np.sum(full_false_positive_mask))
+        full_fn_count = int(np.sum(full_false_negative_mask))
 
         feature_name_map = _build_feature_name_map(model, feature_columns)
-        hard_indices = np.where(hard_mask)[0]
-        fp_indices = np.where(false_positive_mask)[0]
-        fn_indices = np.where(false_negative_mask)[0]
+        hard_indices = np.where(full_hard_mask)[0]
+        fp_indices = np.where(full_false_positive_mask)[0]
+        fn_indices = np.where(full_false_negative_mask)[0]
         shap_batch_size = 256
         def _predict_shap_for_indices(indices):
             if indices.size == 0:
@@ -9235,7 +9249,7 @@ def _export_train_all_sample_reports(logger):
             chunks = []
             for start in range(0, indices.size, shap_batch_size):
                 batch_idx = indices[start:start + shap_batch_size]
-                batch_X = X[batch_idx]
+                batch_X = X_scaled[batch_idx]
                 if isinstance(best_iteration, int) and best_iteration > 0:
                     batch_shap = model.predict(batch_X, num_iteration=best_iteration, pred_contrib=True)
                 else:
@@ -9245,9 +9259,9 @@ def _export_train_all_sample_reports(logger):
         hard_shap = _predict_shap_for_indices(hard_indices)
         fp_shap = _predict_shap_for_indices(fp_indices)
         fn_shap = _predict_shap_for_indices(fn_indices)
-        hard_samples = _build_sample_payload(hard_indices, sample_ids, y_true, y_pred, y_pred_proba, hard_shap, feature_name_map)
-        false_positive_samples = _build_sample_payload(fp_indices, sample_ids, y_true, y_pred, y_pred_proba, fp_shap, feature_name_map)
-        false_negative_samples = _build_sample_payload(fn_indices, sample_ids, y_true, y_pred, y_pred_proba, fn_shap, feature_name_map)
+        hard_samples = _build_sample_payload(hard_indices, sample_ids, y_true, full_y_pred, full_y_pred_proba, hard_shap, feature_name_map)
+        false_positive_samples = _build_sample_payload(fp_indices, sample_ids, y_true, full_y_pred, full_y_pred_proba, fp_shap, feature_name_map)
+        false_negative_samples = _build_sample_payload(fn_indices, sample_ids, y_true, full_y_pred, full_y_pred_proba, fn_shap, feature_name_map)
     except Exception as e:
         logger.warning(f'样本分析阶段失败，已输出空结果文件: {e}')
 
