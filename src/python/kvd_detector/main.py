@@ -9598,7 +9598,7 @@ def _convert_all_weights_to_onnx(weights_dir, logger):
     logger.info(f"ONNX转换统计 converted={len(summary['converted'])} skipped={len(summary['skipped'])} failed={len(summary['failed'])}")
     return summary_path
 
-def _evaluate_onnx_before_conversion(logger):
+def _evaluate_onnx_before_conversion(logger, features_pkl_path: str, scaler_path: str, model_path: str, resources_dir: str):
     import json
     import pickle
     import numpy as np
@@ -9608,12 +9608,12 @@ def _evaluate_onnx_before_conversion(logger):
     import matplotlib.pyplot as plt
     import seaborn as sns
 
-    eval_dir = os.path.join(RESOURCES_DIR, 'eval')
+    eval_dir = os.path.join(resources_dir, 'eval')
     os.makedirs(eval_dir, exist_ok=True)
     report_path = os.path.join(eval_dir, 'onnx_deployment_eval_report.json')
 
     try:
-        df = pd.read_pickle(FEATURES_PKL_PATH)
+        df = pd.read_pickle(features_pkl_path)
         files = df['filename'].tolist()
         y = df['label'].values
         feature_columns = [c for c in df.columns if c.startswith('feature_')]
@@ -9635,7 +9635,6 @@ def _evaluate_onnx_before_conversion(logger):
         logger.warning('测试集为空，跳过ONNX部署前评测')
         return None
 
-    scaler_path = FEATURE_SCALER_PATH
     if not os.path.exists(scaler_path):
         logger.warning(f'找不到scaler文件: {scaler_path}，跳过ONNX部署前评测')
         return None
@@ -9648,7 +9647,7 @@ def _evaluate_onnx_before_conversion(logger):
         logger.warning(f'无法加载scaler: {e}，跳过ONNX部署前评测')
         return None
 
-    onnx_path = MODEL_PATH
+    onnx_path = model_path
     if not os.path.exists(onnx_path):
         txt_path = os.path.splitext(onnx_path)[0] + '.txt'
         if os.path.exists(txt_path):
@@ -9724,7 +9723,7 @@ def _evaluate_onnx_before_conversion(logger):
 def _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False):
     import json
     logger.info('开始ONNX转换前的部署前评测...')
-    onnx_eval_report = _evaluate_onnx_before_conversion(logger)
+    onnx_eval_report = _evaluate_onnx_before_conversion(logger, FEATURES_PKL_PATH, FEATURE_SCALER_PATH, MODEL_PATH, RESOURCES_DIR)
     summary_path = _convert_all_weights_to_onnx(SAVED_MODEL_DIR, logger)
     summary = json.loads(open(summary_path, 'r', encoding='utf-8').read())
     failed = summary.get('failed', [])
