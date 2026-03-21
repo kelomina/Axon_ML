@@ -9297,17 +9297,254 @@ def _merge_train_all_evaluation_summary(logger, deep_engine_report_path=None, sa
     if isinstance(sample_report_payload, dict):
         summary['sample_reports'] = sample_report_payload
     summary['threshold_report'] = threshold_report
+    lightgbm_eval_result = _evaluate_lightgbm_model(logger)
+    if lightgbm_eval_result:
+        summary['lightgbm_model'] = lightgbm_eval_result
+    combined_eval_result = _generate_combined_evaluation(logger, summary)
+    if combined_eval_result:
+        summary['combined_evaluation'] = combined_eval_result
     summary['report_paths'] = {
         'deep_engine': deep_path if os.path.exists(deep_path) else None,
         'deep_engine_metrics': hardcase_metrics_path if os.path.exists(hardcase_metrics_path) else None,
         'sample_reports_dir': HDBSCAN_SAVE_DIR if os.path.exists(HDBSCAN_SAVE_DIR) else None,
         'threshold_report': THRESHOLD_REPORT_PATH if os.path.exists(THRESHOLD_REPORT_PATH) else None,
-        'routing_report': ROUTING_EVAL_REPORT_PATH if os.path.exists(ROUTING_EVAL_REPORT_PATH) else None
+        'routing_report': ROUTING_EVAL_REPORT_PATH if os.path.exists(ROUTING_EVAL_REPORT_PATH) else None,
+        'lightgbm_eval': lightgbm_eval_result.get('report_path') if lightgbm_eval_result else None,
+        'combined_eval': combined_eval_result.get('report_path') if combined_eval_result else None,
     }
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
     logger.info(f'总评测汇总已更新: {summary_path}')
     return summary_path
+
+def _evaluate_lightgbm_model(logger):
+    try:
+        import lightgbm as lgb
+    except ImportError:
+        logger.warning('LightGBM 未安装，跳过 LightGBM 模型评测')
+        return None
+    eval_dir = os.path.join(RESOURCES_DIR, 'eval')
+    os.makedirs(eval_dir, exist_ok=True)
+    report_path = os.path.join(eval_dir, 'lightgbm_model_eval_report.json')
+    fig_dir = os.path.join(eval_dir, 'lightgbm_model_eval')
+    os.makedirs(fig_dir, exist_ok=True)
+    if not Path(FEATURES_PKL_PATH).exists():
+        logger.warning(f'特征文件不存在: {FEATURES_PKL_PATH}，跳过 LightGBM 模型评测')
+        return None
+    try:
+        df = pd.read_pickle(FEATURES_PKL_PATH)
+        files = df['filename'].tolist()
+        y = df['label'].values
+        def _safe_int_sort_key(c):
+            try:
+                return int(c.split('_')[1])
+            except (ValueError, IndexError):
+                return -1
+        feature_columns = [c for c in df.columns if c.startswith('feature_')]
+        feature_columns = sorted(feature_columns, key=_safe_int_sort_key)
+        X = df[feature_columns].values
+    except Exception as e:
+        logger.warning(f'无法加载特征文件进行 LightGBM 评测: {e}')
+        return None
+    if len(X) <= 10:
+        logger.warning('样本数量不足，跳过 LightGBM 模型评测')
+        return None
+    from sklearn.model_selection import train_test_split
+    X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y if len(np.unique(y)) > 1 else None)
+    if len(X_test) == 0:
+        logger.warning('测试集为空，跳过 LightGBM 模型评测')
+        return None
+    model_file = os.path.join(SAVED_MODEL_DIR, 'lightgbm_model.train.txt')
+    if not os.path.exists(model_file):
+        txt_candidates = list(Path(SAVED_MODEL_DIR).glob('*.train.txt'))
+        if txt_candidates:
+            model_file = str(txt_candidates[0])
+        else:
+            logger.warning(f'找不到 LightGBM 模型文件: {model_file}，跳过 LightGBM 模型评测')
+            return None
+    try:
+        model = lgb.Booster(model_file=model_file)
+        y_pred_proba = model.predict(X_test)
+        y_pred = (y_pred_proba > 0.5).astype(int)
+    except Exception as e:
+        logger.warning(f'无法加载 LightGBM 模型: {e}，跳过 LightGBM 模型评测')
+        return None
+    acc = accuracy_score(y_test, y_pred)
+    pre = precision_score(y_test, y_pred, zero_division=0)
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+    fpr_val = fp / max(1, fp + tn)
+    auc_value = 0.0
+    fpr_arr, tpr_arr = None, None
+    try:
+        fpr_arr, tpr_arr, _ = roc_curve(y_test, y_pred_proba)
+        auc_value = roc_auc_score(y_test, y_pred_proba)
+    except Exception:
+        pass
+    report = {
+        'model_path': model_file,
+        'test_samples': int(len(y_test)),
+        'accuracy': float(acc),
+        'precision': float(pre),
+        'recall': float(rec),
+        'f1_score': float(f1),
+        'fpr': float(fpr_val),
+        'auc': float(auc_value),
+        'confusion_matrix': {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)},
+        'generated_at': datetime.now().isoformat()
+    }
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'Arial Unicode MS', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0], xticklabels=['Benign', 'Malicious'], yticklabels=['Benign', 'Malicious'])
+    axes[0].set_title('LightGBM 二分类混淆矩阵')
+    axes[0].set_xlabel('Predicted')
+    axes[0].set_ylabel('Actual')
+    cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    sns.heatmap(cm_normalized, annot=True, fmt='.2%', cmap='Blues', ax=axes[1], xticklabels=['Benign', 'Malicious'], yticklabels=['Benign', 'Malicious'])
+    axes[1].set_title('LightGBM 混淆矩阵热力图（按行归一化）')
+    axes[1].set_xlabel('Predicted')
+    axes[1].set_ylabel('Actual')
+    plt.tight_layout()
+    cm_fig_path = os.path.join(fig_dir, 'lightgbm_confusion_matrix.png')
+    plt.savefig(cm_fig_path, dpi=150, bbox_inches='tight')
+    plt.close('all')
+    if auc_value > 0:
+        fig2, ax2 = plt.subplots(figsize=(8, 6))
+        ax2.plot(fpr_arr, tpr_arr, label=f'AUC={auc_value:.4f}', color='darkorange')
+        ax2.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        ax2.set_xlabel('False Positive Rate')
+        ax2.set_ylabel('True Positive Rate')
+        ax2.set_title('LightGBM ROC 曲线')
+        ax2.legend(loc='lower right')
+        plt.tight_layout()
+        roc_fig_path = os.path.join(fig_dir, 'lightgbm_roc_auc.png')
+        plt.savefig(roc_fig_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+    else:
+        roc_fig_path = None
+    report['confusion_matrix_fig_path'] = cm_fig_path
+    report['roc_auc_fig_path'] = roc_fig_path
+    report['report_path'] = report_path
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    logger.info(f'LightGBM 模型评测图表已保存: {cm_fig_path}')
+    return report
+
+def _generate_combined_evaluation(logger, summary):
+    eval_dir = os.path.join(RESOURCES_DIR, 'eval')
+    os.makedirs(eval_dir, exist_ok=True)
+    hardcase_val = None
+    if 'deep_engine_metrics' in summary and 'validation' in summary['deep_engine_metrics']:
+        hardcase_val = summary['deep_engine_metrics']['validation']
+    lightgbm_report = summary.get('lightgbm_model')
+    if not hardcase_val and not lightgbm_report:
+        logger.warning('缺少 hardcase_dl 和 LightGBM 评测数据，跳过联合评测')
+        return None
+    report_path = os.path.join(eval_dir, 'combined_evaluation_report.json')
+    fig_dir = os.path.join(eval_dir, 'combined_evaluation')
+    os.makedirs(fig_dir, exist_ok=True)
+    combined = {
+        'generated_at': datetime.now().isoformat(),
+        'report_path': report_path,
+    }
+    if hardcase_val:
+        combined['hardcase_dl'] = {
+            'accuracy': hardcase_val.get('accuracy'),
+            'macro_f1': hardcase_val.get('macro_f1'),
+            'confusion_matrix': hardcase_val.get('confusion_matrix'),
+            'report': hardcase_val.get('report'),
+        }
+    if lightgbm_report:
+        combined['lightgbm_model'] = {
+            'accuracy': lightgbm_report.get('accuracy'),
+            'f1_score': lightgbm_report.get('f1_score'),
+            'precision': lightgbm_report.get('precision'),
+            'recall': lightgbm_report.get('recall'),
+            'auc': lightgbm_report.get('auc'),
+            'fpr': lightgbm_report.get('fpr'),
+            'confusion_matrix': lightgbm_report.get('confusion_matrix'),
+        }
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'Arial Unicode MS', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    def _plot_cm_with_normalized(cm, ax, xlabels, ylabels, title, cmap='Blues'):
+        sns.heatmap(cm, annot=True, fmt='d', cmap=cmap, ax=ax,
+                    xticklabels=xlabels, yticklabels=ylabels)
+        ax.set_title(title)
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('Actual')
+        cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        return cm_norm
+    if hardcase_val and lightgbm_report:
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        hardcase_cm = np.array(hardcase_val.get('confusion_matrix', [[0,0,0],[0,0,0],[0,0,0]]))
+        _plot_cm_with_normalized(hardcase_cm, axes[0], ['Hard', 'FP', 'FN'], ['Hard', 'FP', 'FN'], 'HardCase DL 三分类混淆矩阵')
+        lightgbm_cm_dict = lightgbm_report.get('confusion_matrix', {})
+        lightgbm_cm = np.array([[lightgbm_cm_dict.get('tn', 0), lightgbm_cm_dict.get('fp', 0)],
+                                [lightgbm_cm_dict.get('fn', 0), lightgbm_cm_dict.get('tp', 0)]])
+        sns.heatmap(lightgbm_cm, annot=True, fmt='d', cmap='Greens', ax=axes[1],
+                    xticklabels=['Benign', 'Malicious'], yticklabels=['Benign', 'Malicious'])
+        axes[1].set_title('LightGBM 二分类混淆矩阵')
+        axes[1].set_xlabel('Predicted')
+        axes[1].set_ylabel('Actual')
+        plt.tight_layout()
+        combined_cm_path = os.path.join(fig_dir, 'combined_confusion_matrices.png')
+        plt.savefig(combined_cm_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+        combined['combined_confusion_matrices_path'] = combined_cm_path
+        metrics_data = {
+            'Model': ['HardCase DL', 'LightGBM'],
+            'Accuracy': [hardcase_val.get('accuracy', 0), lightgbm_report.get('accuracy', 0)],
+            'F1-Score': [hardcase_val.get('macro_f1', 0), lightgbm_report.get('f1_score', 0)],
+            'Precision': [(hardcase_val.get('report', {}).get('macro avg', {}) or {}).get('precision', 0),
+                         lightgbm_report.get('precision', 0)],
+            'Recall': [(hardcase_val.get('report', {}).get('macro avg', {}) or {}).get('recall', 0),
+                      lightgbm_report.get('recall', 0)],
+        }
+        df_metrics = pd.DataFrame(metrics_data)
+        fig3, ax3 = plt.subplots(figsize=(10, 6))
+        x = np.arange(len(df_metrics['Model']))
+        width = 0.2
+        ax3.bar(x - 1.5*width, df_metrics['Accuracy'], width, label='Accuracy', color='steelblue')
+        ax3.bar(x - 0.5*width, df_metrics['F1-Score'], width, label='F1-Score', color='darkorange')
+        ax3.bar(x + 0.5*width, df_metrics['Precision'], width, label='Precision', color='green')
+        ax3.bar(x + 1.5*width, df_metrics['Recall'], width, label='Recall', color='red')
+        ax3.set_xlabel('Model')
+        ax3.set_ylabel('Score')
+        ax3.set_title('HardCase DL vs LightGBM 性能对比')
+        ax3.set_xticks(x)
+        ax3.set_xticklabels(df_metrics['Model'])
+        ax3.legend()
+        ax3.set_ylim(0, 1.0)
+        for i, model in enumerate(df_metrics['Model']):
+            ax3.text(i - 1.5*width, df_metrics['Accuracy'].iloc[i] + 0.02, f"{df_metrics['Accuracy'].iloc[i]:.3f}", ha='center', va='bottom', fontsize=8)
+            ax3.text(i - 0.5*width, df_metrics['F1-Score'].iloc[i] + 0.02, f"{df_metrics['F1-Score'].iloc[i]:.3f}", ha='center', va='bottom', fontsize=8)
+            ax3.text(i + 0.5*width, df_metrics['Precision'].iloc[i] + 0.02, f"{df_metrics['Precision'].iloc[i]:.3f}", ha='center', va='bottom', fontsize=8)
+            ax3.text(i + 1.5*width, df_metrics['Recall'].iloc[i] + 0.02, f"{df_metrics['Recall'].iloc[i]:.3f}", ha='center', va='bottom', fontsize=8)
+        comparison_path = os.path.join(fig_dir, 'model_comparison.png')
+        plt.savefig(comparison_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+        combined['model_comparison_path'] = comparison_path
+    elif hardcase_val:
+        hardcase_cm = np.array(hardcase_val.get('confusion_matrix', [[0,0,0],[0,0,0],[0,0,0]]))
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        cm_norm = _plot_cm_with_normalized(hardcase_cm, axes[0], ['Hard', 'FP', 'FN'], ['Hard', 'FP', 'FN'], 'HardCase DL 三分类混淆矩阵')
+        sns.heatmap(cm_norm, annot=True, fmt='.2%', cmap='Blues', ax=axes[1],
+                    xticklabels=['Hard', 'FP', 'FN'], yticklabels=['Hard', 'FP', 'FN'])
+        axes[1].set_title('HardCase DL 混淆矩阵热力图（按行归一化）')
+        axes[1].set_xlabel('Predicted')
+        axes[1].set_ylabel('Actual')
+        plt.tight_layout()
+        combined_cm_path = os.path.join(fig_dir, 'hardcase_confusion_matrices.png')
+        plt.savefig(combined_cm_path, dpi=150, bbox_inches='tight')
+        plt.close('all')
+        combined['combined_confusion_matrices_path'] = combined_cm_path
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(combined, f, ensure_ascii=False, indent=2)
+    logger.info(f'联合评测报告已生成: {report_path}')
+    return combined
 
 def _convert_all_weights_to_onnx(weights_dir, logger):
     import json
