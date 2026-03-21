@@ -437,3 +437,33 @@ kvd.kvd_destroy(handle)
 ## 许可证
 
 本项目遵循 [LICENSE](LICENSE) 中的规定。
+
+## 感谢以下开源项目
+
+本项目的开发离不开以下开源项目的支持，在此特别致谢：
+
+| 开源项目 | 许可证 | 说明 |
+|---------|--------|------|
+| [NumPy](https://numpy.org/) | BSD 3-Clause | Python 科学计算基础库 |
+| [SciPy](https://scipy.org/) | BSD 3-Clause | 科学计算 Python 库 |
+| [scikit-learn](https://scikit-learn.org/) | BSD 3-Clause | 机器学习基础库 |
+| [LightGBM](https://lightgbm.org/) | MIT | 高性能梯度提升框架 |
+| [fast-hdbscan](https://github.com/TutteInstitute/fast_hdbscan) | BSD 2-Clause | 高性能 HDBSCAN 聚类算法实现 |
+| [joblib](https://joblib.readthedocs.io/) | BSD 3-Clause | Python 轻量级流水线工具 |
+| [Matplotlib](https://matplotlib.org/) | PSF | Python 可视化绘图库 |
+| [pandas](https://pandas.pydata.org/) | BSD 3-Clause | 数据分析处理库 |
+| [Seaborn](https://seaborn.pydata.org/) | BSD 3-Clause | 基于 matplotlib 的统计数据可视化库 |
+| [PyTorch](https://pytorch.org/) | BSD 3-Clause | 深度学习框架 |
+| [Optuna](https://optuna.org/) | MIT | 自动超参数优化框架 |
+| [Hyperopt](http://hyperopt.github.io/hyperopt/) | BSD 3-Clause | 异步超参数优化库 |
+| [pefile](https://github.com/erocarrera/pefile) | MIT | Python PE 文件解析模块 |
+| [tqdm](https://tqdm.github.io/) | MIT | Python 进度条库 |
+| [ONNX](https://onnx.ai/) | Apache 2.0 | 开放式神经网络交换格式 |
+| [ONNX Runtime](https://onnxruntime.ai/) | MIT | 跨平台高性能 ML 推理加速器 |
+| [skl2onnx](https://onnx.ai/sklearn-onnx/) | Apache 2.0 | scikit-learn 模型转 ONNX 工具 |
+| [ONNX Script](https://github.com/microsoft/onnxscript) | Apache 2.0 | ONNX 模型编写工具 |
+| [ONNX Tools](https://github.com/onnx/onnx-tools) | Apache 2.0 | ONNX 模型处理工具 |
+| [nlohmann_json](https://json.nlohmann.me/) | MIT | C++ JSON 解析库 |
+| [LIEF](https://lief.re/) | Apache 2.0 | 可执行文件格式解析库 |
+
+所有开源项目均采用 permissive 许可证（BSD、MIT、Apache 2.0、PSF），允许自由使用、修改和分发。
