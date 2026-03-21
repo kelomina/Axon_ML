@@ -1938,30 +1938,22 @@ class GatingMLP(nn.Module):
         x = F.relu(self.bn2(self.fc2(x)))
         x = self.dropout(x)
         x = self.fc3(x)
-        # return logits
         return x
 
 class GatingTransformer(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, nhead=4, num_layers=2):
         super(GatingTransformer, self).__init__()
-        # Project input to hidden_dim for transformer
         self.embedding = nn.Linear(input_dim, hidden_dim)
         encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, dim_feedforward=hidden_dim*2, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        # x shape: (batch_size, input_dim)
-        # Transformer expects sequence, so we might need to reshape or project
-        # Here we treat the feature vector as a single token embedding if we just project it, 
-        # but to use attention we usually need a sequence. 
-        # For simplicity, let's just project and pass through encoder as (batch, 1, hidden)
-        
-        x = self.embedding(x) # (batch, hidden)
-        x = x.unsqueeze(1)    # (batch, 1, hidden)
-        x = self.transformer_encoder(x) # (batch, 1, hidden)
-        x = x.squeeze(1)      # (batch, hidden)
-        x = self.fc(x)        # (batch, output)
+        x = self.embedding(x)
+        x = x.unsqueeze(1)
+        x = self.transformer_encoder(x)
+        x = x.squeeze(1)
+        x = self.fc(x)
         return x
 
 def create_gating_model(model_type, input_dim, hidden_dim, output_dim):
@@ -2161,7 +2153,7 @@ def evaluate_model(model, X_test, y_test, files_test=None):
         plt.tight_layout()
         os.makedirs(MODEL_EVAL_FIG_DIR, exist_ok=True)
         plt.savefig(MODEL_EVAL_FIG_PATH, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close('all')
         print(f"[+] Evaluation charts saved to: {MODEL_EVAL_FIG_PATH}")
         try:
             fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
@@ -2961,7 +2953,6 @@ def _cv_score(model, X, y, cv_folds, metric):
     if len(np.unique(y)) < 2:
         return 0.0
     cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
-    # 支持更多指标
     valid_metrics = {
         'roc_auc': 'roc_auc',
         'accuracy': 'accuracy',
@@ -3078,8 +3069,6 @@ def run_cross_test(method=AUTOML_METHOD_DEFAULT, trials=AUTOML_TRIALS_DEFAULT, c
     baseline_model = _make_baseline_model()
     baseline_score = _cv_score(baseline_model, X, y, cv_folds, metric)
     print(f"[*] AutoML基线分数({metric}): {baseline_score:.6f}")
-    
-    # 计算基线的额外指标
     baseline_additional = {}
     for m in AUTOML_ADDITIONAL_METRICS:
         baseline_additional[m] = _cv_score(baseline_model, X, y, cv_folds, m)
@@ -3091,8 +3080,6 @@ def run_cross_test(method=AUTOML_METHOD_DEFAULT, trials=AUTOML_TRIALS_DEFAULT, c
     elif method == 'hyperopt':
         tuned_score, best_params = _hyperopt_tune_lgbm(X, y, cv_folds, trials, metric)
     print(f"[+] AutoML调优分数({metric}): {tuned_score:.6f}")
-    
-    # 计算调优后的额外指标
     best_model = lgb.LGBMClassifier(
         objective='binary',
         n_estimators=DEFAULT_NUM_BOOST_ROUND,
@@ -3164,8 +3151,6 @@ from training.evaluate import evaluate_model
 from features.extractor_in_memory import PE_FEATURE_ORDER
 
 from models.routing_model import RoutingModel
-
-# Feature indices based on analysis
 STAT_FEATURE_DIM = 49 
 LIGHTWEIGHT_PE_DIM = 256
 IDX_PACKED_SECTIONS_RATIO = STAT_FEATURE_DIM + LIGHTWEIGHT_PE_DIM + PE_FEATURE_ORDER.index('packed_sections_ratio')
@@ -3209,19 +3194,13 @@ def get_feature_semantics(index):
 
 def evaluate_routing_system(X_test, y_test, files_test=None):
     print("\n[*] Evaluating Routing System on Test Set...")
-    
-    # Reload the full system
     try:
         routing_model = RoutingModel(device='cuda' if torch.cuda.is_available() else 'cpu')
     except Exception as e:
         print(f"[!] Failed to load Routing System for evaluation: {e}")
         return
-
-    # Predictions
     print("    Running predictions...")
     predictions, routing_decisions = routing_model.predict(X_test)
-    
-    # Binary Classification Metrics
     y_pred_binary = (predictions > PREDICTION_THRESHOLD).astype(int)
     
     acc = accuracy_score(y_test, y_pred_binary)
@@ -3230,15 +3209,11 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
     report = classification_report(y_test, y_pred_binary, target_names=['Benign', 'Malicious'])
     print("\n[*] Classification Report:")
     print(report)
-    
-    # Routing Stats
     stats = routing_model.get_routing_stats(routing_decisions)
     print("\n[*] Routing Statistics on Test Set:")
     print(f"    Total: {stats['total']}")
     print(f"    Routed to Normal Expert: {stats['normal']} ({stats['normal']/stats['total']:.1%})")
     print(f"    Routed to Packed Expert: {stats['packed']} ({stats['packed_ratio']:.1%})")
-
-    # Threshold Sensitivity Analysis
     print("\n[*] Threshold sensitivity (0.90–0.99):")
     thresholds = np.arange(0.90, 1.00, 0.01)
     for t in thresholds:
@@ -3247,10 +3222,10 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
         if cm_t.shape == (2, 2):
             tn, fp, fn, tp = cm_t.ravel()
         else:
-            tn = fp = fn = tp = 0 # Handle edge cases
+            tn = fp = fn = tp = 0
             if len(np.unique(y_test)) == 1:
                 if y_test[0] == 0: tn = len(y_test)
-                else: tp = len(y_test) # Rough approx if prediction matches
+                else: tp = len(y_test)
 
         acc_t = accuracy_score(y_test, y_pred_t)
         pre_t = precision_score(y_test, y_pred_t, zero_division=0)
@@ -3266,11 +3241,7 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
         for rank, idx in enumerate(indices_sorted[:EVAL_TOP_FEATURE_COUNT], 1):
             semantics = get_feature_semantics(idx)
             print(f"    {rank:2d}. feature_{idx}: {feature_importance[idx]:.2f} ({semantics})")
-
-    # --- Reporting & Visualization ---
     os.makedirs(MODEL_EVAL_FIG_DIR, exist_ok=True)
-
-    # 1. Save Text Report
     with open(ROUTING_EVAL_REPORT_PATH, 'w', encoding='utf-8') as f:
         f.write("Routing System Evaluation Report\n")
         f.write("================================\n\n")
@@ -3282,8 +3253,6 @@ def evaluate_routing_system(X_test, y_test, files_test=None):
         f.write(f"    Routed to Normal Expert: {stats['normal']} ({stats['normal']/stats['total']:.1%})\n")
         f.write(f"    Routed to Packed Expert: {stats['packed']} ({stats['packed_ratio']:.1%})\n")
     print(f"[+] Evaluation report saved to {ROUTING_EVAL_REPORT_PATH}")
-
-    # 2. Plot Confusion Matrix
     try:
         cm = confusion_matrix(y_test, y_pred_binary)
         plt.figure(figsize=(8, 6))
@@ -3324,16 +3293,12 @@ def generate_routing_labels(X):
     Label 0 (Normal): Otherwise.
     """
     print("[*] Generating routing labels based on heuristics...")
-    
-    # Check feature dimension
     if X.shape[1] <= max(IDX_PACKED_SECTIONS_RATIO, IDX_PACKER_KEYWORD_HITS_COUNT):
         print(f"[!] Warning: Feature dimension {X.shape[1]} is smaller than expected indices.")
         return np.zeros(len(X), dtype=int)
 
     packed_ratio = X[:, IDX_PACKED_SECTIONS_RATIO]
     packer_hits = X[:, IDX_PACKER_KEYWORD_HITS_COUNT]
-    
-    # Heuristic: Packed if packed_sections_ratio > PACKED_SECTIONS_RATIO_THRESHOLD OR packer_keyword_hits_count > PACKER_KEYWORD_HITS_THRESHOLD
     is_packed = (packed_ratio > PACKED_SECTIONS_RATIO_THRESHOLD) | (packer_hits > PACKER_KEYWORD_HITS_THRESHOLD)
     
     labels = is_packed.astype(int)
@@ -3440,46 +3405,26 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
 
     if fp_finetune:
         print(f"[*] Starting False Positive Finetuning for {expert_name}...")
-        
-        # We need to evaluate on a hold-out set to find FPs. 
-        # Here we use X_val as a proxy if we don't have a separate test set passed in.
-        # But wait, we should really use the X_val FPs to improve training? 
-        # Standard practice: Use Validation FPs to hard-mine.
-        
         current_X_train = X_train
         current_y_train = y_train
         current_files_train = files_train
 
         max_targeted_iterations = DEFAULT_MAX_FINETUNE_ITERATIONS
         for i in range(max_targeted_iterations):
-            # Evaluate on Validation Set
-            # Note: We use X_val to find FPs, then add them to Train.
-            # This "leaks" Val into Train, but for FP mining it's often accepted or we need a 3rd split.
-            # Here we follow the aggressive approach.
-            
             y_pred_proba = model.predict(X_val)
             y_pred = (y_pred_proba > PREDICTION_THRESHOLD).astype(int)
-            
-            # Find FPs
             fp_indices = np.where((y_val == 0) & (y_pred == 1))[0]
             if len(fp_indices) == 0:
                 print(f"    [Round {i+1}] No False Positives found in validation set.")
                 break
                 
             print(f"    [Round {i+1}] Found {len(fp_indices)} False Positives. Retraining...")
-            
-            # Extract FP samples
             X_fps = X_val[fp_indices]
             y_fps = y_val[fp_indices]
             files_fps = [files_val[idx] for idx in fp_indices]
-            
-            # Add to Training Data (Augmentation)
-            # We assume these are "hard" negatives.
             current_X_train = np.vstack([current_X_train, X_fps])
             current_y_train = np.concatenate([current_y_train, y_fps])
             current_files_train = current_files_train + files_fps
-            
-            # Retrain (Incremental/Continued)
             model = train_lightgbm_model(
                 current_X_train, current_y_train, X_val, y_val,
                 files_train=current_files_train,
@@ -3495,11 +3440,8 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
     return model
 
 def main(args=None):
-    # Default Args Handling if None (for direct script execution compatibility)
     if args is None:
         parser = argparse.ArgumentParser()
-        # Add minimal defaults or just rely on config
-        # But really this function expects args object.
         pass
 
     use_existing = args.use_existing_features if args else False
@@ -3529,8 +3471,6 @@ def main(args=None):
         if X is None:
             print("[!] Failed to load incremental data.")
             return
-    
-    # Standard Data Loading
     elif use_existing and os.path.exists(FEATURES_PKL_PATH):
         print(f"[*] Loading features from {FEATURES_PKL_PATH}...")
         try:
@@ -3552,31 +3492,15 @@ def main(args=None):
 
     print(f"[*] Total samples: {len(X)}")
     print(f"[*] Feature dimension: {X.shape[1]}")
-    
-    # 2. Generate Routing Labels
     routing_labels = generate_routing_labels(X)
-    
-    # 3. Train Gating Model
-    # Split for Gating Model Training
     X_train_g, X_val_g, y_train_g, y_val_g = train_test_split(
         X, routing_labels, test_size=DEFAULT_TEST_SIZE, random_state=DEFAULT_RANDOM_STATE, stratify=routing_labels
     )
-    
-    # Only train gating model if NOT in incremental mode or if explicitly requested?
-    # For now, we always retrain gating model to ensure it adapts to new data distribution if any.
     train_gating_model_process(X_train_g, y_train_g, X_val_g, y_val_g)
-    
-    # 4. Train Expert Models
     print("\n[*] Training Expert Models...")
-    
-    # Split Data by Routing Label
-    # We split the entire dataset into Train/Test first to have a global evaluation set.
-    
     X_train_main, X_test_main, y_train_main, y_test_main, r_train_main, r_test_main, files_train_main, files_test_main = train_test_split(
         X, y, routing_labels, files, test_size=DEFAULT_TEST_SIZE, random_state=DEFAULT_RANDOM_STATE, stratify=y
     )
-    
-    # --- Expert Normal (Routing Label 0) ---
     mask_normal = (r_train_main == 0)
     X_normal = X_train_main[mask_normal]
     y_normal = y_train_main[mask_normal]
@@ -3594,8 +3518,6 @@ def main(args=None):
         )
     else:
         print("[!] Not enough samples for Expert Normal training.")
-
-    # --- Expert Packed (Routing Label 1) ---
     mask_packed = (r_train_main == 1)
     X_packed = X_train_main[mask_packed]
     y_packed = y_train_main[mask_packed]
@@ -3615,15 +3537,12 @@ def main(args=None):
         print("[!] Not enough samples for Expert Packed training.")
 
     print("\n[*] Training pipeline completed.")
-
-    # 5. Final System Evaluation
     if len(X_test_main) > 0:
         evaluate_routing_system(X_test_main, y_test_main, files_test_main)
     else:
         print("[!] No test samples available for evaluation.")
 
 if __name__ == '__main__':
-    # Argument Parsing if run directly
     from config.config import (
         DEFAULT_NUM_BOOST_ROUND, DEFAULT_INCREMENTAL_ROUNDS, DEFAULT_INCREMENTAL_EARLY_STOPPING, 
         DEFAULT_MAX_FINETUNE_ITERATIONS
@@ -8786,9 +8705,6 @@ def process_file_directory(input_file_path, output_file_path, max_file_size=DEFA
         byte_sequence=byte_sequence,
         pe_features=pe_features
     )
-
-    #print(f"[+] Successfully processed file: {input_file_path} -> {output_file_path}")
-
 if __name__ == '__main__':
     base_dir = os.path.dirname(os.path.abspath(__file__))
     from tqdm import tqdm
@@ -9682,8 +9598,133 @@ def _convert_all_weights_to_onnx(weights_dir, logger):
     logger.info(f"ONNX转换统计 converted={len(summary['converted'])} skipped={len(summary['skipped'])} failed={len(summary['failed'])}")
     return summary_path
 
+def _evaluate_onnx_before_conversion(logger):
+    import json
+    import pickle
+    import numpy as np
+    import pandas as pd
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, roc_auc_score
+    from sklearn.model_selection import train_test_split
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    eval_dir = os.path.join(RESOURCES_DIR, 'eval')
+    os.makedirs(eval_dir, exist_ok=True)
+    report_path = os.path.join(eval_dir, 'onnx_deployment_eval_report.json')
+
+    try:
+        df = pd.read_pickle(FEATURES_PKL_PATH)
+        files = df['filename'].tolist()
+        y = df['label'].values
+        feature_columns = [c for c in df.columns if c.startswith('feature_')]
+        feature_columns = sorted(feature_columns, key=lambda c: int(c.split('_')[1]))
+        X = df[feature_columns].values
+    except Exception as e:
+        logger.warning(f'无法加载特征文件进行ONNX评测: {e}')
+        return None
+
+    if len(X) <= 10:
+        logger.warning('样本数量不足，跳过ONNX部署前评测')
+        return None
+
+    X_temp, X_test, y_temp, y_test, files_temp, files_test = train_test_split(
+        X, y, files, test_size=0.2, random_state=42, stratify=y if len(np.unique(y)) > 1 else None
+    )
+
+    if len(X_test) == 0:
+        logger.warning('测试集为空，跳过ONNX部署前评测')
+        return None
+
+    scaler_path = FEATURE_SCALER_PATH
+    if not os.path.exists(scaler_path):
+        logger.warning(f'找不到scaler文件: {scaler_path}，跳过ONNX部署前评测')
+        return None
+
+    try:
+        with open(scaler_path, 'rb') as f:
+            scaler = pickle.load(f)
+        X_test_scaled = scaler.transform(X_test)
+    except Exception as e:
+        logger.warning(f'无法加载scaler: {e}，跳过ONNX部署前评测')
+        return None
+
+    onnx_path = MODEL_PATH
+    if not os.path.exists(onnx_path):
+        txt_path = os.path.splitext(onnx_path)[0] + '.txt'
+        if os.path.exists(txt_path):
+            onnx_path = txt_path
+
+    try:
+        import onnxruntime as ort
+        sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        input_name = sess.get_inputs()[0].name
+        y_pred_proba = sess.run(None, {input_name: X_test_scaled.astype(np.float32)})[0].flatten()
+    except Exception as e:
+        logger.warning(f'无法加载ONNX模型: {e}，跳过ONNX部署前评测')
+        return None
+
+    y_pred = (y_pred_proba > 0.5).astype(int)
+    acc = accuracy_score(y_test, y_pred)
+    pre = precision_score(y_test, y_pred, zero_division=0)
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+    fpr_val = fp / max(1, fp + tn)
+
+    auc_value = 0.0
+    try:
+        fpr_arr, tpr_arr, _ = roc_curve(y_test, y_pred_proba)
+        auc_value = roc_auc_score(y_test, y_pred_proba)
+    except Exception:
+        pass
+
+    report = {
+        'model_path': str(onnx_path),
+        'test_samples': int(len(y_test)),
+        'accuracy': float(acc),
+        'precision': float(pre),
+        'recall': float(rec),
+        'f1_score': float(f1),
+        'fpr': float(fpr_val),
+        'auc': float(auc_value),
+        'confusion_matrix': {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)},
+        'generated_at': np.datetime64('now').astype(str)
+    }
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    logger.info(f'ONNX部署前评测报告已生成: {report_path}')
+    logger.info(f"ONNX部署前评测摘要: accuracy={acc:.4f}, precision={pre:.4f}, recall={rec:.4f}, f1={f1:.4f}, auc={auc_value:.4f}, fpr={fpr_val:.4f}")
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0], xticklabels=['Benign', 'Malicious'], yticklabels=['Benign', 'Malicious'])
+    axes[0].set_title('Confusion Matrix')
+    axes[0].set_xlabel('Predicted')
+    axes[0].set_ylabel('Actual')
+
+    if auc_value > 0:
+        axes[1].plot(fpr_arr, tpr_arr, label=f'AUC={auc_value:.4f}', color='darkorange')
+        axes[1].plot([0, 1], [0, 1], linestyle='--', color='gray')
+        axes[1].set_xlabel('False Positive Rate')
+        axes[1].set_ylabel('True Positive Rate')
+        axes[1].set_title('ROC Curve')
+        axes[1].legend(loc='lower right')
+    else:
+        axes[1].text(0.5, 0.5, 'ROC not available', ha='center', va='center')
+
+    plt.tight_layout()
+    fig_path = os.path.join(eval_dir, 'onnx_deployment_eval.png')
+    plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+    plt.close('all')
+    logger.info(f'ONNX部署前评测图表已保存: {fig_path}')
+
+    return report_path
+
 def _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False):
     import json
+    logger.info('开始ONNX转换前的部署前评测...')
+    onnx_eval_report = _evaluate_onnx_before_conversion(logger)
     summary_path = _convert_all_weights_to_onnx(SAVED_MODEL_DIR, logger)
     summary = json.loads(open(summary_path, 'r', encoding='utf-8').read())
     failed = summary.get('failed', [])
