@@ -74,6 +74,8 @@ KVD_API int KVD_CALL kvd_extract_pe_features_batch(
     int* out_status,
     unsigned int thread_count);
 
+KVD_API size_t KVD_CALL kvd_get_pe_feature_dimension(void);
+
 #ifdef __cplusplus
 }
 #endif

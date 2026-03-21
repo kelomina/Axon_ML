@@ -133,8 +133,8 @@ ENTROPY_SAMPLE_SIZE = 10240
 LIGHTWEIGHT_FEATURE_DIM = 256
 # LIGHTWEIGHT_FEATURE_SCALE：轻量特征缩放系数；用途：融合时权重调整；推荐值：1.5（1.0-2.0）
 LIGHTWEIGHT_FEATURE_SCALE = 1.5
-# PE_FEATURE_VECTOR_DIM：综合特征向量总维度；用途：模型输入维度；推荐值：1500
-PE_FEATURE_VECTOR_DIM = 1500
+# PE_FEATURE_VECTOR_DIM：综合特征向量总维度；用途：模型输入维度；推荐值：350
+PE_FEATURE_VECTOR_DIM = 350
 # SIZE_NORM_MAX：文件大小归一化上限；用途：避免尺度过大；推荐值：100MB
 SIZE_NORM_MAX = 128 * 1024 * 1024
 # TIMESTAMP_MAX/TIMESTAMP_YEAR_*：时间戳归一化参数；用途：规范时间特征；推荐值：MAX=2147483647，范围 1970-2038
@@ -713,6 +713,13 @@ def _load_native_dll():
                         ctypes.c_uint
                     ]
                     dll.kvd_extract_pe_features_batch.restype = ctypes.c_int
+                if hasattr(dll, 'kvd_get_pe_feature_dimension'):
+                    dll.kvd_get_pe_feature_dimension.argtypes = []
+                    dll.kvd_get_pe_feature_dimension.restype = ctypes.c_size_t
+                    dll_dim = dll.kvd_get_pe_feature_dimension()
+                    if dll_dim != PE_FEATURE_VECTOR_DIM:
+                        print(f"[!] Dimension mismatch: Python PE_FEATURE_VECTOR_DIM={PE_FEATURE_VECTOR_DIM}, C++ DLL kvd_get_pe_feature_dimension()={dll_dim}")
+                        print(f"    Please rebuild the DLL or ensure version consistency.")
                 _NATIVE_DLL = dll
                 _NATIVE_DLL_READY = True
                 return _NATIVE_DLL
@@ -10041,7 +10048,7 @@ def main():
             )
             finetune.main(fine_args)
             _merge_train_all_evaluation_summary(logger, deep_engine_report_path=deep_engine_report_path, sample_report_payload=sample_report_payload)
-            _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False)
+            _ensure_onnx_artifacts_after_training(logger, keep_train_txt=True)
             logger.info('训练与聚类流程已完成')
         except Exception as e:
             logger.error(f'一键训练失败: {e}')

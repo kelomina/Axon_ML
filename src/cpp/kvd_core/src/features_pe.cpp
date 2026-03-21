@@ -46,7 +46,7 @@
 
 namespace kvd {
 
-static constexpr std::size_t PE_FEATURE_VECTOR_DIM = 1500;
+static constexpr std::size_t PE_FEATURE_VECTOR_DIM = 350;
 static constexpr std::size_t LIGHTWEIGHT_FEATURE_DIM = 256;
 static constexpr std::size_t STAT_FEATURE_DIM = 49;
 static constexpr float LIGHTWEIGHT_FEATURE_SCALE = 1.5f;
@@ -1126,6 +1126,7 @@ std::vector<float> extract_combined_pe_features_from_path(
   }
 
   l2_normalize(combined);
+  assert(combined.size() == PE_FEATURE_VECTOR_DIM && "extract_combined_pe_features_from_path: feature vector dimension mismatch");
   return combined;
 }
 

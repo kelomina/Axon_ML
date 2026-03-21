@@ -54,7 +54,7 @@ struct kvd_handle {
 
 static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& path);
 static std::shared_ptr<kvd::FamilyClassifier> get_shared_family_classifier(const std::string& path);
-static constexpr std::size_t KVD_PE_FEATURE_VECTOR_DIM = 1500;
+static constexpr std::size_t KVD_PE_FEATURE_VECTOR_DIM = 350;
 
 static std::string kvd_temp_dir() {
   std::error_code ec;
@@ -751,6 +751,10 @@ int kvd_extract_pe_features_batch(
   } catch (...) {
     return -2;
   }
+}
+
+size_t kvd_get_pe_feature_dimension(void) {
+  return KVD_PE_FEATURE_VECTOR_DIM;
 }
 
 int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len) {
