@@ -65,3 +65,4 @@ attention_benchmark
 weights
 eval
 BUILD-VCPKG
+onnxruntime-win-x64-1.24.4

@@ -9,6 +9,7 @@ set(KVD_SOURCES
   features_pe.cpp
   features_statistics.cpp
   lightgbm_infer.cpp
+  onnx_infer.cpp
   malware_scanner.cpp
   family_classifier.cpp
   sha256.cpp
@@ -27,6 +28,31 @@ target_include_directories(signature_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/.
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(LIEF CONFIG REQUIRED)
 
+set(ONNXRUNTIME_ROOT "e:/Project/python/KoloVirusDetector_ML_V2-main/onnxruntime-win-x64-1.24.4")
+set(ONNXRUNTIME_INCLUDE_DIR "${ONNXRUNTIME_ROOT}/include")
+set(ONNXRUNTIME_LIBRARY "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
+set(ONNXRUNTIME_DLL "${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll")
+
+add_library(onnxruntime::onnxruntime SHARED IMPORTED)
+set_target_properties(onnxruntime::onnxruntime PROPERTIES
+  IMPORTED_LOCATION_RELEASE "${ONNXRUNTIME_LIBRARY}"
+  IMPORTED_IMPLIB_RELEASE "${ONNXRUNTIME_LIBRARY}"
+  IMPORTED_LOCATION_DEBUG "${ONNXRUNTIME_LIBRARY}"
+  IMPORTED_IMPLIB_DEBUG "${ONNXRUNTIME_LIBRARY}"
+  INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
+)
+
+add_library(onnxruntime_providers_shared SHARED IMPORTED)
+set_target_properties(onnxruntime_providers_shared PROPERTIES
+  IMPORTED_LOCATION_RELEASE "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
+  IMPORTED_IMPLIB_RELEASE "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.lib"
+  IMPORTED_LOCATION_DEBUG "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
+  IMPORTED_IMPLIB_DEBUG "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.lib"
+  INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
+)
+
+file(COPY "${ONNXRUNTIME_DLL}" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+
 find_path(LIGHTGBM_INCLUDE_DIR NAMES LightGBM/c_api.h)
 find_library(LIGHTGBM_LIBRARY_RELEASE NAMES lib_lightgbm PATH_SUFFIXES lib)
 find_library(LIGHTGBM_LIBRARY_DEBUG NAMES lib_lightgbm PATH_SUFFIXES debug/lib)
@@ -43,6 +69,8 @@ target_link_libraries(axon_engine
     nlohmann_json::nlohmann_json
     LIEF::LIEF
     lightgbm::lightgbm
+    onnxruntime::onnxruntime
+    onnxruntime_providers_shared
     bcrypt
 )
 target_link_libraries(signature_engine
@@ -50,6 +78,8 @@ target_link_libraries(signature_engine
     nlohmann_json::nlohmann_json
     LIEF::LIEF
     lightgbm::lightgbm
+    onnxruntime::onnxruntime
+    onnxruntime_providers_shared
     bcrypt
 )
 

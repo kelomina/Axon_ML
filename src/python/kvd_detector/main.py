@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import os
+import ast
 import argparse
 import asyncio
 import re
@@ -32,6 +33,15 @@ def _register_embedded(name, source, is_package=False):
         _EMBEDDED_PACKAGES.add(name)
 
 class _EmbeddedImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    _ALLOWED_MODULE_PREFIXES = frozenset({
+        'config.', 'config', 'features.', 'features',
+        'models.', 'models', 'training.', 'training',
+        'validation.', 'validation', 'hard_negative.',
+        'hard_negative', 'feature_enhancer.', 'feature_enhancer',
+        'utils.', 'utils', 'pretrain.', 'pretrain', 'finetune.', 'finetune',
+        'data.', 'data',
+    })
+
     def find_spec(self, fullname, path=None, target=None):
         if fullname in _EMBEDDED_SOURCES:
             return importlib.util.spec_from_loader(fullname, self, is_package=fullname in _EMBEDDED_PACKAGES)
@@ -39,6 +49,92 @@ class _EmbeddedImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def create_module(self, spec):
         return None
+
+    def _validate_source(self, source, module_name):
+        if not source or not isinstance(source, str):
+            return False
+        dangerous_patterns = (
+            '__import__(',
+            'os.system',
+            'os.popen',
+            'subprocess.',
+            'requests.',
+            'urllib.',
+            'socket.',
+        )
+        if module_name.startswith((
+            'training', 'models', 'features', 'validation',
+            'utils', 'hard_negative', 'feature_enhancer',
+            'pretrain', 'finetune', 'data'
+        )):
+            dangerous_patterns = tuple(p for p in dangerous_patterns if p != '__import__(')
+        source_lower = source.lower()
+        for pattern in dangerous_patterns:
+            normalized_pattern = pattern.lower()
+            if normalized_pattern in source_lower:
+                return False
+        if not self._validate_source_ast(source, module_name):
+            return False
+        return True
+
+    ALLOWED_IMPORTS = frozenset({
+        'numpy', 'json', 'pickle', 'os', 'sys', 'time', 'math', 'argparse', 'csv', 'ctypes', 'hashlib', 'gc',
+        'collections', 'itertools', 'functools', 'operator', 'multiprocessing', 'random',
+        'pathlib', 're', 'struct', 'warnings',
+        'sklearn', 'lightgbm', 'torch', 'onnxruntime',
+        'numpy.core', 'numpy.lib', 'numpy.random',
+        'sklearn.preprocessing', 'sklearn.utils', 'sklearn.cluster',
+        'sklearn.base', 'sklearn.metrics',
+        'config', 'logging', 'threading', 'builtins',
+        'datetime', 'matplotlib', 'seaborn', 'pandas', 'skl2onnx', 'onnxmltools', 'pefile', 'xgboost', 'fast_hdbscan', 'hyperopt', 'optuna',
+        'data', 'concurrent', 'tqdm',
+        'models', 'features', 'training', 'validation', 'utils',
+        'hard_negative', 'feature_enhancer',
+    })
+
+    def _validate_source_ast(self, source, module_name):
+        try:
+            allow_open = module_name.startswith((
+                'training', 'models', 'features', 'validation',
+                'utils', 'hard_negative', 'feature_enhancer', 'config',
+                'pretrain', 'finetune', 'data'
+            ))
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        if node.func.id in ('eval', 'exec', 'compile', 'input', 'exit', 'quit'):
+                            return False
+                        if node.func.id == 'open' and not allow_open:
+                            return False
+                    elif isinstance(node.func, ast.Attribute):
+                        attr_name = node.func.attr
+                        if attr_name in ('system', 'popen', 'spawn', 'execl', 'execv', 'spawnl', 'spawnv'):
+                            if isinstance(node.func.value, ast.Name):
+                                if node.func.value.id in ('os', 'subprocess', 'socket'):
+                                    return False
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        name = alias.name.split('.')[0]
+                        if name not in self.ALLOWED_IMPORTS:
+                            return False
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        name = node.module.split('.')[0]
+                        if name not in self.ALLOWED_IMPORTS:
+                            return False
+            return True
+        except SyntaxError:
+            return False
+        except Exception:
+            return False
+
+    def _is_module_allowed(self, module_name, prefix):
+        if not module_name.startswith(prefix):
+            return False
+        if len(module_name) == len(prefix):
+            return True
+        return module_name[len(prefix)] == '.'
 
     def exec_module(self, module):
         source = _EMBEDDED_SOURCES.get(module.__name__)
@@ -50,7 +146,14 @@ class _EmbeddedImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             module.__package__ = module.__name__
         else:
             module.__package__ = module.__name__.rpartition('.')[0]
-        exec(source, module.__dict__)
+        if not self._ALLOWED_MODULE_PREFIXES or any(
+            self._is_module_allowed(module.__name__, prefix.rstrip('.'))
+            for prefix in self._ALLOWED_MODULE_PREFIXES
+        ):
+            if self._validate_source(source, module.__name__):
+                exec(source, module.__dict__)
+            else:
+                raise RuntimeError(f"Embedded source for {module.__name__} failed security validation")
 
 def _install_embedded_importer():
     for item in sys.meta_path:
@@ -531,9 +634,10 @@ class MalwareDataset:
             orig_length = 0
         if len(byte_sequence) > self.max_length:
             byte_sequence = byte_sequence[:self.max_length]
-        else:
-            byte_sequence = np.pad(byte_sequence, (0, self.max_length - len(byte_sequence)), 'constant')
-        
+        elif len(byte_sequence) < self.max_length:
+            padded = np.zeros(self.max_length, dtype=np.uint8)
+            padded[:len(byte_sequence)] = byte_sequence
+            byte_sequence = padded
         return byte_sequence, pe_features, label, orig_length
 ''')
 
@@ -587,12 +691,12 @@ def extract_statistical_features(byte_sequence, pe_features, orig_length=None):
     if length >= 3:
         one_third = length // 3
         segments = [
-            byte_array[:one_third],
-            byte_array[one_third:2 * one_third],
-            byte_array[2 * one_third:],
+            byte_array[:one_third].copy(),
+            byte_array[one_third:2 * one_third].copy(),
+            byte_array[2 * one_third:].copy(),
         ]
     else:
-        segments = [byte_array, byte_array, byte_array]
+        segments = [byte_array.copy(), byte_array.copy(), byte_array.copy()]
     for seg in segments:
         if len(seg) == 0:
             seg_mean = 0.0
@@ -1661,6 +1765,10 @@ def configure_logging(log_file_name=_DEFAULT_LOG_FILE, level=_DEFAULT_LOG_LEVEL)
     )
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
+    if os.environ.get('KVD_CONSOLE_LOG', '1') == '1':
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
     set_log_level(level)
     logging.captureWarnings(True)
     return root_logger
@@ -1839,6 +1947,8 @@ def validate_path(path):
     normalized_path = os.path.normpath(path)
     if '\0' in normalized_path:
         return None
+    if any(part == '..' for part in normalized_path.split(os.sep)):
+        return None
     if not os.path.exists(normalized_path):
         return None
     return normalized_path
@@ -1885,19 +1995,48 @@ class FamilyClassifier:
                 'scaler': self.scaler
             }, f)
 
+    ALLOWED_CLASS_MODULES = frozenset({
+        'numpy', 'sklearn', 'sklearn.preprocessing', 'sklearn.preprocessing._data',
+        'sklearn.utils', 'sklearn.cluster', 'sklearn.base', 'sklearn.metrics',
+        'lightgbm', 'torch', 'onnxruntime',
+    })
+
+    def _secure_find_class(self, module, name):
+        if module.split('.')[0] not in self.ALLOWED_CLASS_MODULES:
+            raise pickle.UnpicklingError(f"Unauthorized class: {module}.{name}")
+        return getattr(__import__(module, fromlist=[name]), name)
+
     def load(self, path):
         if not os.path.exists(path):
             return False
         try:
             with open(path, 'rb') as f:
-                data = pickle.load(f)
+                unpickler = pickle.Unpickler(f)
+                unpickler.find_class = self._secure_find_class
+                data = unpickler.load()
                 self.centroids = data['centroids']
                 self.thresholds = data['thresholds']
                 self.family_names = data['family_names']
                 self.scaler = data.get('scaler')
             return True
-        except Exception:
+        except FileNotFoundError:
+            print(f"[Error] Family classifier file not found: {path}")
             return False
+        except pickle.UnpicklingError as e:
+            print(f"[Error] Failed to unpickle family classifier: {e}")
+            return False
+        except KeyError as e:
+            print(f"[Error] Missing required key in family classifier data: {e}")
+            return False
+        except Exception as e:
+            print(f"[Error] Unexpected error loading family classifier: {type(e).__name__}: {e}")
+            return False
+
+    def _secure_find_module(self, name, loader=None):
+        for mod in self.ALLOWED_CLASS_MODULES:
+            if name == mod or name.startswith(mod + '.'):
+                return None
+        raise pickle.UnpicklingError(f"Unauthorized module: {name}")
 
     def predict(self, feature_vector):
         if not self.centroids:
@@ -1985,16 +2124,24 @@ class RoutingModel:
     def load_models(self):
         if GATING_MODE != 'rule':
             print(f"[!] GATING_MODE={GATING_MODE} 非 'rule'，将使用规则门控以避免依赖 torch")
-        if os.path.exists(EXPERT_NORMAL_MODEL_PATH):
-            print(f"[*] Loading Normal Expert from {EXPERT_NORMAL_MODEL_PATH}")
-            self.expert_normal = lgb.Booster(model_file=EXPERT_NORMAL_MODEL_PATH)
-        else:
-            print(f"[!] Normal expert model not found at {EXPERT_NORMAL_MODEL_PATH}")
-        if os.path.exists(EXPERT_PACKED_MODEL_PATH):
-            print(f"[*] Loading Packed Expert from {EXPERT_PACKED_MODEL_PATH}")
-            self.expert_packed = lgb.Booster(model_file=EXPERT_PACKED_MODEL_PATH)
-        else:
-            print(f"[!] Packed expert model not found at {EXPERT_PACKED_MODEL_PATH}")
+        try:
+            if os.path.exists(EXPERT_NORMAL_MODEL_PATH):
+                print(f"[*] Loading Normal Expert from {EXPERT_NORMAL_MODEL_PATH}")
+                self.expert_normal = lgb.Booster(model_file=EXPERT_NORMAL_MODEL_PATH)
+            else:
+                print(f"[!] Normal expert model not found at {EXPERT_NORMAL_MODEL_PATH}")
+        except Exception as e:
+            print(f"[!] Failed to load Normal Expert: {e}")
+            self.expert_normal = None
+        try:
+            if os.path.exists(EXPERT_PACKED_MODEL_PATH):
+                print(f"[*] Loading Packed Expert from {EXPERT_PACKED_MODEL_PATH}")
+                self.expert_packed = lgb.Booster(model_file=EXPERT_PACKED_MODEL_PATH)
+            else:
+                print(f"[!] Packed expert model not found at {EXPERT_PACKED_MODEL_PATH}")
+        except Exception as e:
+            print(f"[!] Failed to load Packed Expert: {e}")
+            self.expert_packed = None
 
     def predict(self, features):
         x = np.asarray(features)
@@ -2020,16 +2167,20 @@ class RoutingModel:
 
     def _feature_index(self, key):
         try:
-            return 256 + PE_FEATURE_ORDER.index(key)
+            idx = 256 + PE_FEATURE_ORDER.index(key)
+            return idx
         except ValueError:
+            print(f"[Warning] Feature key '{key}' not found in PE_FEATURE_ORDER, routing may not work correctly")
             return None
 
     def _rule_gating(self, x):
         start = x.shape[1] - PE_FEATURE_VECTOR_DIM
         p = self._idx_packed_sections
         k = self._idx_packer_hits
-        ps = x[:, start + p] if p is not None else np.zeros(len(x))
-        kh = x[:, start + k] if k is not None else np.zeros(len(x))
+        if p is None or k is None:
+            return np.zeros(len(x), dtype=int)
+        ps = x[:, start + p]
+        kh = x[:, start + k]
         return np.logical_or(
             ps > PACKED_SECTIONS_RATIO_THRESHOLD,
             kh > PACKER_KEYWORD_HITS_THRESHOLD
@@ -2188,10 +2339,11 @@ def incremental_train_lightgbm_model(existing_model, X_train, y_train, X_val, y_
     val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
     if false_positive_files is not None and files_train is not None:
         print(f"[*] Detected {len(false_positive_files)} false positive samples, increasing their training weights")
+        false_positive_set = set(false_positive_files)
         weights = np.ones(len(X_train), dtype=np.float32)
         false_positive_count = 0
         for i, file in enumerate(files_train):
-            if file in false_positive_files:
+            if file in false_positive_set:
                 weights[i] = 10.0
                 false_positive_count += 1
         print(f"[+] Identified {false_positive_count} false positive samples, adjusted weights")
@@ -2308,11 +2460,12 @@ def train_lightgbm_model(X_train, y_train, X_val, y_val, false_positive_files=No
             combined_weights = np.maximum(combined_weights, sample_weights)
     if false_positive_files is not None and files_train is not None:
         print(f"[*] Detected {len(false_positive_files)} false positive samples, increasing their training weights")
+        false_positive_set = set(false_positive_files)
         false_positive_count = 0
         weight_factor = min(FP_WEIGHT_BASE + iteration * FP_WEIGHT_GROWTH_PER_ITER, FP_WEIGHT_MAX)
         print(f"[*] Current false positive weight factor: {weight_factor}")
         for i, file in enumerate(files_train):
-            if file in false_positive_files:
+            if file in false_positive_set:
                 combined_weights[i] = max(combined_weights[i], weight_factor)
                 false_positive_count += 1
         print(f"[+] Identified {false_positive_count} false positive samples, adjusted weights")
@@ -2458,25 +2611,56 @@ def _save_npz_with_stat_cache(file_path, byte_sequence, pe_features, orig_length
         )
     os.replace(tmp_file, file_path)
 
+def _infer_label_from_filename(filename):
+    fname_lower = filename.lower()
+    benign_patterns = (
+        '待加入白名单', 'whitelist', 'benign', 'good', 'clean',
+        'white_list', 'known_good', 'trusted', 'safe', 'negative'
+    )
+    malicious_patterns = (
+        'malicious', 'virus', 'trojan', 'malware', 'infected',
+        'harmful', 'dangerous', 'positive', 'threat', 'ransomware',
+        'backdoor', 'rootkit', 'worm', 'spyware', 'adware', 'dropper'
+    )
+    for pattern in benign_patterns:
+        if pattern in fname_lower or pattern in filename:
+            return 0
+    for pattern in malicious_patterns:
+        if pattern in fname_lower:
+            return 1
+    return None
+
+def _infer_label_from_metadata_label(label):
+    if label is None:
+        return None
+    if isinstance(label, str):
+        label_lower = label.lower()
+        if label_lower in ('benign', 'good', 'clean', 'white', 'safe', 'negative', '0', '待加入白名单'):
+            return 0
+        if label_lower in ('malicious', 'malware', 'bad', 'dangerous', 'positive', 'threat', '1', '恶意'):
+            return 1
+    if isinstance(label, (int, float)):
+        if label == 0 or label == 0.0:
+            return 0
+        if label == 1 or label == 1.0:
+            return 1
+    return None
+
 def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, fast_dev_run=False, max_workers=16):
     print("[*] Loading dataset...")
     with open(metadata_file, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
     label_map = {}
     for file, label in metadata.items():
-        fname_lower = file.lower()
-        if ('待加入白名单' in file) or ('whitelist' in fname_lower) or ('benign' in fname_lower) or ('good' in fname_lower) or ('clean' in fname_lower):
-            label_map[file] = 0
-        elif ('malicious' in fname_lower) or ('virus' in fname_lower) or ('trojan' in fname_lower):
-            label_map[file] = 1
-        elif label == 'benign' or label == 0:
-            label_map[file] = 0
-        elif label == 'malicious' or label == 1:
-            label_map[file] = 1
-        elif label == '待加入白名单':
-            label_map[file] = 0
+        inferred_from_filename = _infer_label_from_filename(file)
+        inferred_from_meta = _infer_label_from_metadata_label(label)
+        if inferred_from_filename is not None:
+            label_map[file] = inferred_from_filename
+        elif inferred_from_meta is not None:
+            label_map[file] = inferred_from_meta
         else:
             label_map[file] = 1
+            print(f"[Warning] Unknown label for {file}, defaulting to malicious (1)")
     benign_count = sum(1 for v in label_map.values() if v == 0)
     malicious_count = sum(1 for v in label_map.values() if v == 1)
     print(f"[+] Label distribution: Benign={benign_count}, Malicious={malicious_count}")
@@ -2536,8 +2720,10 @@ def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, f
                 cache_features = None
             if len(byte_sequence) > max_file_size:
                 byte_sequence = byte_sequence[:max_file_size]
-            else:
-                byte_sequence = np.pad(byte_sequence, (0, max_file_size - len(byte_sequence)), 'constant')
+            elif len(byte_sequence) < max_file_size:
+                padded = np.zeros(max_file_size, dtype=np.uint8)
+                padded[:len(byte_sequence)] = byte_sequence
+                byte_sequence = padded
             orig_pe_len = len(pe_features)
             status = 'ok'
             if orig_pe_len != PE_FEATURE_VECTOR_DIM:
@@ -2545,7 +2731,12 @@ def load_dataset(data_dir, metadata_file, max_file_size=DEFAULT_MAX_FILE_SIZE, f
                 copy_len = min(orig_pe_len, PE_FEATURE_VECTOR_DIM)
                 fixed_pe_features[:copy_len] = pe_features[:copy_len]
                 pe_features = fixed_pe_features
-                status = 'padded' if orig_pe_len < PE_FEATURE_VECTOR_DIM else 'truncated'
+                if orig_pe_len < PE_FEATURE_VECTOR_DIM:
+                    status = 'padded'
+                    print(f"[Warning] PE features padded: {file_path} (expected {PE_FEATURE_VECTOR_DIM}, got {orig_pe_len})")
+                else:
+                    status = 'truncated'
+                    print(f"[Warning] PE features truncated: {file_path} (expected {PE_FEATURE_VECTOR_DIM}, got {orig_pe_len})")
             if cache_features is not None and cache_features.size > 0:
                 return i, cache_features, label, status, None, True, False
             features = extract_statistical_features(byte_sequence, pe_features, orig_length)
@@ -3410,6 +3601,8 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
         current_files_train = files_train
 
         max_targeted_iterations = DEFAULT_MAX_FINETUNE_ITERATIONS
+        MAX_TRAINING_SET_SIZE = min(len(X_train) * 3, 50000)
+        MAX_FP_SAMPLES_PER_ROUND = min(len(fp_indices) if 'fp_indices' in dir() else 1000, 5000)
         for i in range(max_targeted_iterations):
             y_pred_proba = model.predict(X_val)
             y_pred = (y_pred_proba > PREDICTION_THRESHOLD).astype(int)
@@ -3417,11 +3610,20 @@ def train_expert_model_with_finetuning(X_train, y_train, X_val, y_val, files_tra
             if len(fp_indices) == 0:
                 print(f"    [Round {i+1}] No False Positives found in validation set.")
                 break
-                
+            if len(current_X_train) >= MAX_TRAINING_SET_SIZE:
+                print(f"    [Round {i+1}] Training set size limit reached ({len(current_X_train)} >= {MAX_TRAINING_SET_SIZE}). Stopping finetuning.")
+                break
+
             print(f"    [Round {i+1}] Found {len(fp_indices)} False Positives. Retraining...")
             X_fps = X_val[fp_indices]
             y_fps = y_val[fp_indices]
             files_fps = [files_val[idx] for idx in fp_indices]
+            if len(X_fps) > MAX_FP_SAMPLES_PER_ROUND:
+                selected_idx = np.random.choice(len(X_fps), MAX_FP_SAMPLES_PER_ROUND, replace=False)
+                X_fps = X_fps[selected_idx]
+                y_fps = y_fps[selected_idx]
+                files_fps = [files_fps[idx] for idx in selected_idx]
+                print(f"    [Round {i+1}] Limited FP samples to {MAX_FP_SAMPLES_PER_ROUND}")
             current_X_train = np.vstack([current_X_train, X_fps])
             current_y_train = np.concatenate([current_y_train, y_fps])
             current_files_train = current_files_train + files_fps
@@ -3853,7 +4055,8 @@ class ProbabilityCalibrator:
     def fit(self, y_true, y_prob):
         y_true = np.asarray(y_true).astype(np.int64)
         y_prob = np.asarray(y_prob).astype(np.float32)
-        y_prob = np.clip(y_prob, 1e-6, 1 - 1e-6)
+        if not (0 < y_prob.min() < y_prob.max() < 1):
+            y_prob = np.clip(y_prob, 1e-6, 1 - 1e-6)
         if self.method == "isotonic":
             self.model = IsotonicRegression(out_of_bounds="clip")
             self.model.fit(y_prob, y_true)
@@ -3866,7 +4069,8 @@ class ProbabilityCalibrator:
 
     def predict(self, y_prob):
         y_prob = np.asarray(y_prob).astype(np.float32)
-        y_prob = np.clip(y_prob, 1e-6, 1 - 1e-6)
+        if not (0 < y_prob.min() < y_prob.max() < 1):
+            y_prob = np.clip(y_prob, 1e-6, 1 - 1e-6)
         if isinstance(self.model, IsotonicRegression):
             return self.model.predict(y_prob)
         logit = np.log(y_prob / (1 - y_prob)).reshape(-1, 1)
@@ -3885,7 +4089,14 @@ def load_pool(path=HARD_NEGATIVE_POOL_PATH):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return list(dict.fromkeys(data))
-    except Exception:
+    except json.JSONDecodeError as e:
+        print(f"[Warning] Failed to parse hard negative pool JSON: {e}")
+        return []
+    except IOError as e:
+        print(f"[Warning] Failed to read hard negative pool file: {e}")
+        return []
+    except Exception as e:
+        print(f"[Warning] Unexpected error loading hard negative pool: {type(e).__name__}: {e}")
         return []
 
 def save_pool(pool, path=HARD_NEGATIVE_POOL_PATH, limit=HARD_NEGATIVE_MAX * 10):
@@ -4185,7 +4396,7 @@ class EnsembleModel:
         meta_path = os.path.join(model_dir, f"{prefix}_meta.json")
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
-        meta_model = joblib.load(os.path.join(model_dir, f"{prefix}_meta.joblib"))
+        meta_model = EnsembleModel._secure_joblib_load(os.path.join(model_dir, f"{prefix}_meta.joblib"))
         base_models = []
         for item in meta["models"]:
             slc = None
@@ -4194,7 +4405,7 @@ class EnsembleModel:
             if item["type"] == "lgb":
                 model = lgb.Booster(model_file=item["path"])
             else:
-                model = joblib.load(item["path"])
+                model = EnsembleModel._secure_joblib_load(item["path"])
             base_models.append({
                 "name": item["name"],
                 "type": item["type"],
@@ -4202,6 +4413,23 @@ class EnsembleModel:
                 "model": model
             })
         return EnsembleModel(base_models, meta_model, meta["base_dim"], meta["total_dim"])
+
+    @staticmethod
+    def _secure_joblib_load(path):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model file not found: {path}")
+        abs_path = os.path.abspath(path)
+        cwd = os.getcwd()
+        if not (abs_path.startswith(cwd + os.sep) or abs_path == cwd):
+            raise RuntimeError(f"Model path outside allowed directory: {path}")
+        try:
+            import joblib
+            data = joblib.load(abs_path)
+            if data is None:
+                raise ValueError("Loaded model is None")
+            return data
+        except Exception as e:
+            raise RuntimeError(f"Failed to securely load model from {path}: {e}")
 
 def _compute_sample_weights(y, files=None, hard_negative_set=None):
     n_pos = int(np.sum(y == 1))
@@ -4327,9 +4555,30 @@ def train_gating_model(X_train, y_train, X_val, y_val, model_path, input_dim):
 def load_gating_model(model_path, input_dim):
     model = GatingMLP(input_dim, GATING_HIDDEN_DIM, 2)
     if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+        if not _validate_model_state_dict(state_dict, model):
+            print(f"[Warning] Model state_dict structure mismatch, using untrained model")
+        else:
+            model.load_state_dict(state_dict)
+    else:
+        print(f"[Warning] Gating model not found at {model_path}, using untrained model")
     model.eval()
     return model
+
+def _validate_model_state_dict(state_dict, model):
+    if not isinstance(state_dict, dict):
+        return False
+    model_state_keys = set(model.state_dict().keys())
+    loaded_keys = set(state_dict.keys())
+    if model_state_keys != loaded_keys:
+        missing = model_state_keys - loaded_keys
+        extra = loaded_keys - model_state_keys
+        if missing:
+            print(f"[Warning] Missing keys in state_dict: {missing}")
+        if extra:
+            print(f"[Warning] Extra keys in state_dict: {extra}")
+        return False
+    return True
 
 def predict_gating(model, X):
     with torch.no_grad():
@@ -4350,7 +4599,7 @@ def _try_import_onnxruntime():
         return None
 
 class OnnxPredictor:
-    def __init__(self, model_path, feature_names, providers=None):
+    def __init__(self, model_path, feature_names, providers=None, expected_hash=None):
         self.model_path = model_path
         self.feature_names = feature_names
         self.providers = providers
@@ -4362,6 +4611,10 @@ class OnnxPredictor:
             return
         if not os.path.exists(model_path):
             return
+        if expected_hash is not None:
+            if not self._verify_file_hash(model_path, expected_hash):
+                print(f"[Warning] ONNX model hash mismatch for {model_path}")
+                return
         self.session = ort.InferenceSession(model_path, providers=providers or ["CPUExecutionProvider"])
         self.input_name = self.session.get_inputs()[0].name
         feat_path = os.path.join(os.path.dirname(model_path), "features.json")
@@ -4370,6 +4623,16 @@ class OnnxPredictor:
                 model_features = json.load(f)
             name_to_idx = {n: i for i, n in enumerate(feature_names)}
             self.index_map = [name_to_idx.get(n) for n in model_features]
+
+    @staticmethod
+    def _verify_file_hash(path, expected_hash):
+        import hashlib
+        try:
+            with open(path, 'rb') as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+            return file_hash == expected_hash
+        except Exception:
+            return False
 
     def available(self):
         return self.session is not None and self.input_name is not None
@@ -5584,6 +5847,7 @@ def main(args=None):
 ''')
 
 _register_embedded("pretrain", r'''import os
+import sys
 import argparse
 import json
 import pickle
@@ -6281,12 +6545,12 @@ if __name__ == '__main__':
     if args.incremental_training and not args.incremental_data_dir:
 
         print("[!] --incremental-data-dir parameter must be specified when enabling incremental training")
-        exit(1)
+        sys.exit(1)
 
     if args.incremental_raw_data_dir and not args.incremental_data_dir:
 
         print("[!] --incremental-data-dir parameter must be specified when specifying --incremental-raw-data-dir")
-        exit(1)
+        sys.exit(1)
 
     main(args)
 ''')
@@ -6367,6 +6631,11 @@ def filter_malicious_samples(features, labels, files):
     return malicious_features, malicious_labels, malicious_files
 
 def perform_hdbscan_clustering(features, min_cluster_size=50, min_samples=10):
+    features = np.asarray(features)
+    if features.ndim != 2:
+        raise ValueError(f"features must be 2D array, got {features.ndim}D")
+    if features.shape[0] == 0:
+        raise ValueError("features array is empty")
 
     print("[*] Performing clustering analysis using HDBSCAN...")
     print(f"    [*] Original feature dimension: {features.shape[1]}")
@@ -6382,11 +6651,14 @@ def perform_hdbscan_clustering(features, min_cluster_size=50, min_samples=10):
     except Exception:
         pass
 
+    pca = None
+    features_for_clustering = features_scaled
     if features_scaled.shape[1] > pca_dim:
         print(f"    [*] High feature dimension, reducing to {pca_dim} dimensions using PCA for better clustering...")
         pca = PCA(n_components=pca_dim, random_state=DEFAULT_RANDOM_STATE)
         features_for_clustering = pca.fit_transform(features_scaled)
         print(f"    [*] Reduced feature dimension: {features_for_clustering.shape[1]}")
+        del features_scaled
     else:
         features_for_clustering = features_scaled
 
@@ -6408,38 +6680,37 @@ def perform_hdbscan_clustering(features, min_cluster_size=50, min_samples=10):
         else:
             backend = 'fast_hdbscan'
 
-    if backend == 'fast_hdbscan':
-        if not FAST_HDBSCAN_AVAILABLE:
-            raise RuntimeError('fast_hdbscan not available')
-        print("    [*] Using fast_hdbscan multicore optimized version")
-        clusterer = fast_hdbscan.HDBSCAN(
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
-            cluster_selection_method='eom'
-        )
-
-        try:
+    clusterer = None
+    try:
+        if backend == 'fast_hdbscan':
+            if not FAST_HDBSCAN_AVAILABLE:
+                raise RuntimeError('fast_hdbscan not available')
+            print("    [*] Using fast_hdbscan multicore optimized version")
+            clusterer = fast_hdbscan.HDBSCAN(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples,
+                cluster_selection_method='eom'
+            )
             labels = clusterer.fit_predict(features_for_clustering)
-        except MemoryError as e:
-            print(f"[!] HDBSCAN MemoryError: {e}")
-            print(f"    features_for_clustering.shape={getattr(features_for_clustering, 'shape', None)} dtype={getattr(features_for_clustering, 'dtype', None)}")
-            raise
-        except Exception as e:
-            print(f"[!] HDBSCAN failed: {e}")
-            print(f"    features_for_clustering.shape={getattr(features_for_clustering, 'shape', None)} dtype={getattr(features_for_clustering, 'dtype', None)}")
-            raise
-    elif backend == 'minibatch_kmeans':
-        print("    [*] Using MiniBatchKMeans for clustering")
-        clusterer = MiniBatchKMeans(
-            n_clusters=int(KMEANS_N_CLUSTERS),
-            batch_size=int(KMEANS_BATCH_SIZE),
-            max_iter=int(KMEANS_MAX_ITER),
-            n_init=int(KMEANS_N_INIT),
-            random_state=DEFAULT_RANDOM_STATE
-        )
-        labels = clusterer.fit_predict(features_for_clustering)
-    else:
-        raise ValueError(f'Unsupported FAMILY_CLUSTERING_BACKEND: {backend}')
+        elif backend == 'minibatch_kmeans':
+            print("    [*] Using MiniBatchKMeans for clustering")
+            clusterer = MiniBatchKMeans(
+                n_clusters=int(KMEANS_N_CLUSTERS),
+                batch_size=int(KMEANS_BATCH_SIZE),
+                max_iter=int(KMEANS_MAX_ITER),
+                n_init=int(KMEANS_N_INIT),
+                random_state=DEFAULT_RANDOM_STATE
+            )
+            labels = clusterer.fit_predict(features_for_clustering)
+        else:
+            raise ValueError(f'Unsupported FAMILY_CLUSTERING_BACKEND: {backend}')
+    finally:
+        del features_for_clustering
+        if pca is not None:
+            del pca
+        del scaler
+        import gc
+        gc.collect()
 
     unique_labels = np.unique(labels)
     n_clusters = len(unique_labels) - (1 if -1 in labels else 0)
@@ -7954,15 +8225,18 @@ def validate_path(path):
     """
     if not path:
         return None
-    
+
     normalized_path = os.path.normpath(path)
-    
+
     if '\0' in normalized_path:
         return None
-        
+
+    if '..' in os.path.relpath(path):
+        return None
+
     if not os.path.exists(normalized_path):
         return None
-        
+
     return normalized_path
 
 def extract_byte_sequence(file_path):
@@ -9318,11 +9592,19 @@ def _merge_train_all_evaluation_summary(logger, deep_engine_report_path=None, sa
     return summary_path
 
 def _evaluate_lightgbm_model(logger):
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from datetime import datetime
     try:
         import lightgbm as lgb
     except ImportError:
         logger.warning('LightGBM 未安装，跳过 LightGBM 模型评测')
         return None
+    from pathlib import Path
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, roc_auc_score
     eval_dir = os.path.join(RESOURCES_DIR, 'eval')
     os.makedirs(eval_dir, exist_ok=True)
     report_path = os.path.join(eval_dir, 'lightgbm_model_eval_report.json')
@@ -9349,7 +9631,6 @@ def _evaluate_lightgbm_model(logger):
     if len(X) <= 10:
         logger.warning('样本数量不足，跳过 LightGBM 模型评测')
         return None
-    from sklearn.model_selection import train_test_split
     X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y if len(np.unique(y)) > 1 else None)
     if len(X_test) == 0:
         logger.warning('测试集为空，跳过 LightGBM 模型评测')
@@ -9434,6 +9715,11 @@ def _evaluate_lightgbm_model(logger):
     return report
 
 def _generate_combined_evaluation(logger, summary):
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from datetime import datetime
     eval_dir = os.path.join(RESOURCES_DIR, 'eval')
     os.makedirs(eval_dir, exist_ok=True)
     hardcase_val = None
@@ -9777,12 +10063,27 @@ def _convert_all_weights_to_onnx(weights_dir, logger):
             opset_version=17,
         )
 
+    def _secure_load_torch_model(pt_file):
+        try:
+            return torch.load(pt_file, map_location='cpu', weights_only=True), None
+        except Exception:
+            pass
+        try:
+            payload = torch.load(pt_file, map_location='cpu', weights_only=False)
+            if not isinstance(payload, dict):
+                return None, 'Model payload is not a dictionary'
+            if 'state_dict' not in payload and 'model_state_dict' not in payload:
+                return None, 'Model payload does not contain state_dict'
+            return payload, None
+        except Exception as e:
+            return None, f'Unsafe model load rejected: {e}'
+
     for pt_file in sorted(weights_path.glob('*.pt')):
         try:
-            try:
-                payload = torch.load(pt_file, map_location='cpu')
-            except Exception:
-                payload = torch.load(pt_file, map_location='cpu', weights_only=False)
+            payload, error = _secure_load_torch_model(pt_file)
+            if error:
+                _append('failed', pt_file, reason=error)
+                continue
             state = None
             model = None
             input_dim = None
@@ -9816,7 +10117,7 @@ def _convert_all_weights_to_onnx(weights_dir, logger):
                 output_dim = int(payload.get('num_classes', state['net.11.weight'].shape[0]))
                 model = _HardcaseBaseMLP(input_dim, output_dim)
             else:
-                raise RuntimeError('未识别的PT权重结构，无法构建网络')
+                raise RuntimeError(f'未识别的PT权重结构，无法构建网络: keys={list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}')
 
             model.load_state_dict(state, strict=True)
             dst = pt_file.with_suffix('.onnx')
@@ -9973,11 +10274,14 @@ def _ensure_onnx_artifacts_after_training(logger, keep_train_txt=False):
             logger.info(f'已清理非增量训练侧车文件: {train_txt}')
 
 def main():
+    import matplotlib
+    matplotlib.use('Agg')
     log_level = os.environ.get('KVD_LOG_LEVEL', 'INFO')
     configure_logging(log_file_name='app.log', level=log_level)
     set_log_level(log_level)
     redirect_print_to_logger('kolo.print')
-    redirect_console_to_logger_allow_progress('kolo.console')
+    if os.environ.get('KVD_REDIRECT_CONSOLE', '0') == '1':
+        redirect_console_to_logger_allow_progress('kolo.console')
     logger = get_logger('kolo')
     logger.debug(f'进入主流程 argv={sys.argv}')
     parser = argparse.ArgumentParser(prog='KoloVirusDetector', description='KoloVirusDetector 项目入口')
@@ -10210,10 +10514,21 @@ def main():
             logger.error(f'hardcase 模型对比试验失败: {e}')
             raise
     elif args.command == 'train-all':
+        required_deps = ['numpy', 'pandas', 'sklearn', 'lightgbm']
+        missing_deps = [name for name in required_deps if importlib.util.find_spec(name) is None]
+        if missing_deps:
+            logger.error(f'缺少依赖: {", ".join(missing_deps)}，请先安装后再运行 train-all')
+            return
         import pretrain
-        from training import train_routing
-        from training import hardcase_dl
-        import finetune
+        torch_available = importlib.util.find_spec('torch') is not None
+        if torch_available:
+            from training import train_routing
+            from training import hardcase_dl
+            import finetune
+        else:
+            train_routing = None
+            hardcase_dl = None
+            finetune = None
         try:
             if not os.path.exists(METADATA_FILE):
                 logger.info(f"[*] 元数据文件不存在: {METADATA_FILE}，将自动开始特征提取...")
@@ -10304,43 +10619,50 @@ def main():
                 max_input_dim=args.hardcase_max_input_dim,
                 max_samples_per_class=args.hardcase_max_samples_per_class
             )
-            hardcase_metrics = hardcase_dl.main(hardcase_args)
-            deep_engine_report_path = _export_train_all_deep_engine_eval_report(logger, hardcase_metrics)
-            routing_args = argparse.Namespace(
-                use_existing_features=True,
-                save_features=False,
-                fast_dev_run=False,
-                incremental_training=False,
-                incremental_data_dir=None,
-                incremental_raw_data_dir=None,
-                file_extensions=None,
-                label_inference='filename',
-                num_boost_round=DEFAULT_NUM_BOOST_ROUND,
-                incremental_rounds=DEFAULT_INCREMENTAL_ROUNDS,
-                incremental_early_stopping=DEFAULT_INCREMENTAL_EARLY_STOPPING,
-                max_finetune_iterations=DEFAULT_MAX_FINETUNE_ITERATIONS,
-                max_file_size=DEFAULT_MAX_FILE_SIZE
-            )
-            if override_params:
-                routing_args.override_params = override_params
-            train_routing.main(routing_args)
-            fine_args = argparse.Namespace(
-                data_dir=PROCESSED_DATA_DIR,
-                features_path=FEATURES_PKL_PATH,
-                save_dir=HDBSCAN_SAVE_DIR,
-                max_file_size=DEFAULT_MAX_FILE_SIZE,
-                min_cluster_size=DEFAULT_MIN_CLUSTER_SIZE,
-                min_samples=DEFAULT_MIN_SAMPLES,
-                min_family_size=DEFAULT_MIN_FAMILY_SIZE,
-                plot_pca=False,
-                explain_discrepancy=False,
-                treat_noise_as_family=DEFAULT_TREAT_NOISE_AS_FAMILY,
-                skip_cluster_quality_eval=args.skip_cluster_quality_eval
-            )
-            finetune.main(fine_args)
+            deep_engine_report_path = None
+            if torch_available:
+                hardcase_metrics = hardcase_dl.main(hardcase_args)
+                deep_engine_report_path = _export_train_all_deep_engine_eval_report(logger, hardcase_metrics)
+                routing_args = argparse.Namespace(
+                    use_existing_features=True,
+                    save_features=False,
+                    fast_dev_run=False,
+                    incremental_training=False,
+                    incremental_data_dir=None,
+                    incremental_raw_data_dir=None,
+                    file_extensions=None,
+                    label_inference='filename',
+                    num_boost_round=DEFAULT_NUM_BOOST_ROUND,
+                    incremental_rounds=DEFAULT_INCREMENTAL_ROUNDS,
+                    incremental_early_stopping=DEFAULT_INCREMENTAL_EARLY_STOPPING,
+                    max_finetune_iterations=DEFAULT_MAX_FINETUNE_ITERATIONS,
+                    max_file_size=DEFAULT_MAX_FILE_SIZE
+                )
+                if override_params:
+                    routing_args.override_params = override_params
+                train_routing.main(routing_args)
+                fine_args = argparse.Namespace(
+                    data_dir=PROCESSED_DATA_DIR,
+                    features_path=FEATURES_PKL_PATH,
+                    save_dir=HDBSCAN_SAVE_DIR,
+                    max_file_size=DEFAULT_MAX_FILE_SIZE,
+                    min_cluster_size=DEFAULT_MIN_CLUSTER_SIZE,
+                    min_samples=DEFAULT_MIN_SAMPLES,
+                    min_family_size=DEFAULT_MIN_FAMILY_SIZE,
+                    plot_pca=False,
+                    explain_discrepancy=False,
+                    treat_noise_as_family=DEFAULT_TREAT_NOISE_AS_FAMILY,
+                    skip_cluster_quality_eval=args.skip_cluster_quality_eval
+                )
+                finetune.main(fine_args)
+            else:
+                logger.warning('未检测到 torch，已跳过路由训练、深度学习与聚类步骤')
             _merge_train_all_evaluation_summary(logger, deep_engine_report_path=deep_engine_report_path, sample_report_payload=sample_report_payload)
             _ensure_onnx_artifacts_after_training(logger, keep_train_txt=True)
-            logger.info('训练与聚类流程已完成')
+            if torch_available:
+                logger.info('训练与聚类流程已完成')
+            else:
+                logger.info('训练流程已完成（部分步骤跳过）')
         except Exception as e:
             logger.error(f'一键训练失败: {e}')
             raise

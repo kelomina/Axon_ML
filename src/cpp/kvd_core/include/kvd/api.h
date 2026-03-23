@@ -32,6 +32,9 @@ typedef struct kvd_config {
   const char* allowed_scan_root;
   unsigned int max_file_size;
   float prediction_threshold;
+  const char* onnx_model_path;
+  const char* onnx_model_normal_path;
+  const char* onnx_model_packed_path;
 } kvd_config;
 
 typedef enum kvd_model_check_result {
@@ -50,6 +53,12 @@ typedef enum kvd_model_check_result {
   KVD_MODEL_ERR_HARDCASE_MANIFEST_INVALID = -20,
   KVD_MODEL_ERR_HARDCASE_MODEL_MISSING = -21,
   KVD_MODEL_ERR_HARDCASE_MODEL_INVALID = -22,
+  KVD_MODEL_ERR_ONNX_MAIN_MISSING = -30,
+  KVD_MODEL_ERR_ONNX_MAIN_INVALID = -31,
+  KVD_MODEL_ERR_ONNX_NORMAL_MISSING = -32,
+  KVD_MODEL_ERR_ONNX_NORMAL_INVALID = -33,
+  KVD_MODEL_ERR_ONNX_PACKED_MISSING = -34,
+  KVD_MODEL_ERR_ONNX_PACKED_INVALID = -35,
   KVD_MODEL_ERR_OOM = -100
 } kvd_model_check_result;
 

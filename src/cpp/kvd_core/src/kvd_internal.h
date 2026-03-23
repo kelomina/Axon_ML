@@ -32,6 +32,9 @@ struct Config {
   std::optional<std::string> allowed_scan_root;
   std::size_t max_file_size = 64 * 1024;
   float prediction_threshold = 0.98f;
+  std::string onnx_model_path;
+  std::string onnx_model_normal_path;
+  std::string onnx_model_packed_path;
 };
 
 struct ScanResultFamily {

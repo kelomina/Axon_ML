@@ -18,6 +18,7 @@
 #include "config.h"
 #include "features.h"
 #include "malware_scanner.h"
+#include "onnx_infer.h"
 #include "util_filesystem.h"
 
 #include <algorithm>
@@ -50,6 +51,9 @@ struct kvd_handle {
   std::shared_ptr<kvd::LightGbmModel> model_normal;
   std::shared_ptr<kvd::LightGbmModel> model_packed;
   std::shared_ptr<kvd::FamilyClassifier> family_classifier;
+  std::shared_ptr<kvd::OnnxModel> onnx_model;
+  std::shared_ptr<kvd::OnnxModel> onnx_model_normal;
+  std::shared_ptr<kvd::OnnxModel> onnx_model_packed;
 };
 
 static std::shared_ptr<kvd::LightGbmModel> get_shared_model(const std::string& path);
@@ -156,7 +160,10 @@ kvd_handle* kvd_create(const kvd_config* config) {
         config->family_classifier_json_path,
         config->allowed_scan_root,
         config->max_file_size,
-        config->prediction_threshold);
+        config->prediction_threshold,
+        config->onnx_model_path,
+        config->onnx_model_normal_path,
+        config->onnx_model_packed_path);
 
 #if defined(KVD_SIGNATURE_ONLY)
     kvd_handle* h = new (std::nothrow) kvd_handle{};
@@ -184,6 +191,26 @@ kvd_handle* kvd_create(const kvd_config* config) {
     h->model_normal = std::move(model_normal);
     h->model_packed = std::move(model_packed);
     h->family_classifier = std::move(family_classifier);
+
+    if (!cfg.onnx_model_path.empty()) {
+      auto onnx_m = kvd::OnnxModel::load_from_file(cfg.onnx_model_path);
+      if (onnx_m) {
+        h->onnx_model = std::make_shared<kvd::OnnxModel>(std::move(*onnx_m));
+      }
+    }
+    if (!cfg.onnx_model_normal_path.empty()) {
+      auto onnx_m_normal = kvd::OnnxModel::load_from_file(cfg.onnx_model_normal_path);
+      if (onnx_m_normal) {
+        h->onnx_model_normal = std::make_shared<kvd::OnnxModel>(std::move(*onnx_m_normal));
+      }
+    }
+    if (!cfg.onnx_model_packed_path.empty()) {
+      auto onnx_m_packed = kvd::OnnxModel::load_from_file(cfg.onnx_model_packed_path);
+      if (onnx_m_packed) {
+        h->onnx_model_packed = std::make_shared<kvd::OnnxModel>(std::move(*onnx_m_packed));
+      }
+    }
+
     return h;
 #endif
   } catch (const std::exception& e) {
@@ -513,7 +540,10 @@ static kvd::MalwareScanner* get_thread_scanner(kvd_handle* handle) {
       handle->model,
       handle->model_normal,
       handle->model_packed,
-      handle->family_classifier);
+      handle->family_classifier,
+      handle->onnx_model,
+      handle->onnx_model_normal,
+      handle->onnx_model_packed);
   if (!scanner_opt) {
     return nullptr;
   }
@@ -773,7 +803,10 @@ int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_
         config->family_classifier_json_path,
         config->allowed_scan_root,
         config->max_file_size,
-        config->prediction_threshold);
+        config->prediction_threshold,
+        config->onnx_model_path,
+        config->onnx_model_normal_path,
+        config->onnx_model_packed_path);
 
     auto write_error = [&](const std::string& code) -> int {
       if (!out_error && !out_len) {
@@ -849,6 +882,37 @@ int kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_
       if (hardcase_rc != KVD_MODEL_OK) {
         int rc = write_error(hardcase_error);
         return rc == 0 ? hardcase_rc : rc;
+      }
+    }
+
+    if (!cfg.onnx_model_path.empty()) {
+      if (!path_exists(cfg.onnx_model_path)) {
+        int rc = write_error("onnx_model_main_missing");
+        return rc == 0 ? KVD_MODEL_ERR_ONNX_MAIN_MISSING : rc;
+      }
+      if (!kvd::OnnxModel::load_from_file(cfg.onnx_model_path)) {
+        int rc = write_error("onnx_model_main_invalid");
+        return rc == 0 ? KVD_MODEL_ERR_ONNX_MAIN_INVALID : rc;
+      }
+    }
+    if (!cfg.onnx_model_normal_path.empty()) {
+      if (!path_exists(cfg.onnx_model_normal_path)) {
+        int rc = write_error("onnx_model_normal_missing");
+        return rc == 0 ? KVD_MODEL_ERR_ONNX_NORMAL_MISSING : rc;
+      }
+      if (!kvd::OnnxModel::load_from_file(cfg.onnx_model_normal_path)) {
+        int rc = write_error("onnx_model_normal_invalid");
+        return rc == 0 ? KVD_MODEL_ERR_ONNX_NORMAL_INVALID : rc;
+      }
+    }
+    if (!cfg.onnx_model_packed_path.empty()) {
+      if (!path_exists(cfg.onnx_model_packed_path)) {
+        int rc = write_error("onnx_model_packed_missing");
+        return rc == 0 ? KVD_MODEL_ERR_ONNX_PACKED_MISSING : rc;
+      }
+      if (!kvd::OnnxModel::load_from_file(cfg.onnx_model_packed_path)) {
+        int rc = write_error("onnx_model_packed_invalid");
+        return rc == 0 ? KVD_MODEL_ERR_ONNX_PACKED_INVALID : rc;
       }
     }
 

@@ -71,7 +71,10 @@ Config config_from_api(
     const char* family_classifier_json_path,
     const char* allowed_scan_root,
     unsigned int max_file_size,
-    float prediction_threshold) {
+    float prediction_threshold,
+    const char* onnx_model_path,
+    const char* onnx_model_normal_path,
+    const char* onnx_model_packed_path) {
   Config cfg;
   if (model_path && *model_path) cfg.model_path = model_path;
   if (model_normal_path) cfg.model_normal_path = model_normal_path;
@@ -80,6 +83,9 @@ Config config_from_api(
   if (allowed_scan_root && *allowed_scan_root) cfg.allowed_scan_root = std::string(allowed_scan_root);
   if (max_file_size > 0) cfg.max_file_size = static_cast<std::size_t>(max_file_size);
   if (prediction_threshold > 0.0f && prediction_threshold <= 1.0f) cfg.prediction_threshold = prediction_threshold;
+  if (onnx_model_path && *onnx_model_path) cfg.onnx_model_path = onnx_model_path;
+  if (onnx_model_normal_path && *onnx_model_normal_path) cfg.onnx_model_normal_path = onnx_model_normal_path;
+  if (onnx_model_packed_path && *onnx_model_packed_path) cfg.onnx_model_packed_path = onnx_model_packed_path;
 
   if (cfg.model_path.empty()) {
     auto env_model = getenv_string(ENV_LIGHTGBM_MODEL_PATH);
@@ -157,6 +163,27 @@ Config config_from_api(
     std::string default_hardcase = (std::filesystem::path("resources") / "weights_cluster_eval" / "weights" / "hardcase_cxx_manifest.json").string();
     if (path_exists(default_hardcase)) {
       cfg.hardcase_manifest_path = default_hardcase;
+    }
+  }
+
+  if (cfg.onnx_model_path.empty()) {
+    std::string default_onnx = (std::filesystem::path("saved_models") / "model.onnx").string();
+    if (path_exists(default_onnx)) {
+      cfg.onnx_model_path = default_onnx;
+    }
+  }
+
+  if (cfg.onnx_model_normal_path.empty()) {
+    std::string default_onnx_normal = (std::filesystem::path("saved_models") / "model_normal.onnx").string();
+    if (path_exists(default_onnx_normal)) {
+      cfg.onnx_model_normal_path = default_onnx_normal;
+    }
+  }
+
+  if (cfg.onnx_model_packed_path.empty()) {
+    std::string default_onnx_packed = (std::filesystem::path("saved_models") / "model_packed.onnx").string();
+    if (path_exists(default_onnx_packed)) {
+      cfg.onnx_model_packed_path = default_onnx_packed;
     }
   }
 
