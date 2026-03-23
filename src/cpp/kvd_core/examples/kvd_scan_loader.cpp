@@ -28,8 +28,11 @@ static bool has_flag(int argc, char** argv, const std::string& flag) {
 static int usage() {
   std::cerr
       << "Usage:\n"
-      << "  kvd_scan_loader --target <file> [--dll <kvd.dll>] [--model <lightgbm_model.txt>]\n"
-      << "                 [--model_normal <lightgbm_model_normal.txt>] [--model_packed <lightgbm_model_packed.txt>]\n"
+      << "  kvd_scan_loader --target <file> [--dll <axon_engine.dll>]\n"
+      << "                 [--model <lightgbm_model.txt>] [--model_normal <lightgbm_model_normal.txt>]\n"
+      << "                 [--model_packed <lightgbm_model_packed.txt>]\n"
+      << "                 [--onnx_model <model.onnx>] [--onnx_model_normal <model_normal.onnx>]\n"
+      << "                 [--onnx_model_packed <model_packed.onnx>]\n"
       << "                 [--family <family_classifier.json>] [--allowed_root <dir>]\n"
       << "                 [--max_file_size <bytes>] [--threshold <0..1>]\n";
   return 2;
@@ -59,7 +62,7 @@ int main(int argc, char** argv) {
   }
 
   std::string dll_path = get_arg_value(argc, argv, "--dll");
-  if (dll_path.empty()) dll_path = "kvd.dll";
+  if (dll_path.empty()) dll_path = "axon_engine.dll";
 
   std::string target = get_arg_value(argc, argv, "--target");
   if (target.empty()) {
@@ -69,6 +72,9 @@ int main(int argc, char** argv) {
   std::string model_path = get_arg_value(argc, argv, "--model");
   std::string model_normal_path = get_arg_value(argc, argv, "--model_normal");
   std::string model_packed_path = get_arg_value(argc, argv, "--model_packed");
+  std::string onnx_model_path = get_arg_value(argc, argv, "--onnx_model");
+  std::string onnx_model_normal_path = get_arg_value(argc, argv, "--onnx_model_normal");
+  std::string onnx_model_packed_path = get_arg_value(argc, argv, "--onnx_model_packed");
   std::string family_path = get_arg_value(argc, argv, "--family");
   std::string allowed_root = get_arg_value(argc, argv, "--allowed_root");
   std::string max_file_size_s = get_arg_value(argc, argv, "--max_file_size");
@@ -112,6 +118,9 @@ int main(int argc, char** argv) {
   if (!model_path.empty()) cfg.model_path = model_path.c_str();
   if (!model_normal_path.empty()) cfg.model_normal_path = model_normal_path.c_str();
   if (!model_packed_path.empty()) cfg.model_packed_path = model_packed_path.c_str();
+  if (!onnx_model_path.empty()) cfg.onnx_model_path = onnx_model_path.c_str();
+  if (!onnx_model_normal_path.empty()) cfg.onnx_model_normal_path = onnx_model_normal_path.c_str();
+  if (!onnx_model_packed_path.empty()) cfg.onnx_model_packed_path = onnx_model_packed_path.c_str();
   if (!family_path.empty()) cfg.family_classifier_json_path = family_path.c_str();
   if (!allowed_root.empty()) cfg.allowed_scan_root = allowed_root.c_str();
 

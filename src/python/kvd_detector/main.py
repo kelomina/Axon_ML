@@ -508,10 +508,10 @@ GATING_MODE = 'rule'
 GATING_MODEL_PATH = os.path.join(SAVED_MODEL_DIR, 'gating_model.pth')
 # GATING_INPUT_DIM corresponds to the total feature dimension (Statistical + PE features)
 # Statistical features: 49 (based on current logic with STAT_CHUNK_COUNT=10)
-# PE features: 1500 (PE_FEATURE_VECTOR_DIM)
-# Total: 1549
-# GATING_INPUT_DIM：门控输入维度；用途：统计特征 + PE 特征总和；推荐值：1549
-GATING_INPUT_DIM = 1549 
+# PE features: 350 (PE_FEATURE_VECTOR_DIM)
+# Total: 399
+# GATING_INPUT_DIM：门控输入维度；用途：统计特征 + PE 特征总和；推荐值：399
+GATING_INPUT_DIM = 399 
 # GATING_HIDDEN_DIM：门控隐藏层维度；用途：控制门控网络复杂度；推荐值：256
 GATING_HIDDEN_DIM = 256
 # GATING_OUTPUT_DIM：门控输出维度；用途：0 为普通样本，1 为加壳样本；推荐值：2
