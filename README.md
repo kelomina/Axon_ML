@@ -1,469 +1,152 @@
 # 神枢 (Axon V2) - 恶意软件检测与家族分类系统
 
-神枢 (Axon V2) 是一个基于机器学习的高性能恶意软件检测与家族分类系统。它结合了 LightGBM 梯度提升决策树、路由门控专家系统以及基于 HDBSCAN 的家族聚类分析，旨在提供快速、准确且可扩展的恶意样本识别能力。
+神枢 (Axon V2) 是一个基于机器学习的高性能恶意软件检测与家族分类系统。该系统采用了混合架构，包含用于高性能特征提取与推理的 C++ 扫描内核 (`kvd_core`)，以及用于模型训练、评估、调优和复杂业务逻辑的 Python 智能调度框架 (`kvd_detector`)。
 
-## 核心特性
+Axon V2 旨在提供快速、准确且可扩展的恶意样本识别能力，不仅能够进行基础的恶意/良性二分类，还具备处理加壳样本、攻坚困难样本以及进行家族聚类归属的深度分析能力。
 
-- **双层检测机制**：
-    - **二分类检测**：使用 LightGBM 判断文件是否为恶意样本。
-    - **路由门控与专家系统 (Gating & Expert Models)**：动态路由机制自动将样本分发至 **Normal Expert** (处理常规样本) 或 **Packed Expert** (处理加壳/高熵样本)，显著提升对复杂加壳样本的检测精度。
-- **家族识别与归属**：
-    - 基于 **fast-hdbscan** 的无监督聚类分析，自动发现恶意软件家族。
-    - 训练家族分类器，支持对新样本进行家族归属预测。
-- **混合动力引擎**：
-    - **C++ 扫描内核**：底层 `kvd_core` 提供高性能的文件解析与特征提取能力。
-    - **Python 智能调度**：上层 Python 框架负责模型训练、评估及业务逻辑调度。
-- **多维评估与可视化**：
-    - 提供混淆矩阵、ROC-AUC 曲线、PCA 聚类图等多种评估报表。
-    - 支持 AutoML (Optuna) 超参数自动调优。
-- **灵活的部署方式**：
-    - 支持单机命令行批量扫描。
-    - 提供基于 IPC 的扫描服务接口，便于系统集成。
+## 🌟 核心特性
 
-## 项目结构
+- **双层检测机制与路由专家系统 (Gating & Expert Models)**：
+  - 动态路由门控网络，能够自动判断样本是否加壳/高熵。
+  - 将样本分发至对应的 **常规专家 (Normal Expert)** 或 **加壳专家 (Packed Expert)** 进行深度检测，显著提升了对复杂加壳样本的识别精度。
+- **困难样本与误报/漏报攻坚 (Hardcase Deep Learning)**：
+  - 针对传统 GBDT 难以区分的困难样本 (Hard Samples)、假阳性 (False Positives) 和假阴性 (False Negatives)，引入了专用的深度学习级联模型 (`HardCaseNet`) 进行二次研判。
+  - 支持多模型方案对比试验 (A/B/C Trials) 以选择最佳攻坚策略。
+- **无监督家族识别与归属**：
+  - 基于 **fast-hdbscan** 对恶意样本进行无监督聚类分析，自动发现未知的恶意软件家族。
+  - 训练专门的家族分类器，实现对新未知样本的快速家族归属预测。
+- **全方位特征工程引擎**：
+  - C++ 内核底层支持超过 1500 维的细粒度特征提取，涵盖文件级统计、PE 结构、Section 属性、导入/导出表、安全标志、轻量级哈希 (API/DLL 名) 以及组合交互特征等。
+- **多引擎混合架构与统一 ONNX 部署**：
+  - **C++ 扫描内核**：底层 `axon_engine.dll` 和 `signature_engine.dll` 集成了 LightGBM C API 与 ONNX Runtime，提供微秒级的本地特征解析与推理性能。
+  - **ONNX 优先**：提供一键权重转换工具 (`convert-weights-onnx`)，将所有 LightGBM 模型、路由模型、深度学习模型和缩放器统一转换为 `.onnx` 格式，实现跨语言与环境的无缝部署。
+
+## 📂 项目结构
 
 ```text
 / (项目根目录)
 ├── src/                      # 源代码根目录
 │   ├── cpp/                  # C++ 核心扫描引擎 (kvd_core)
-│   └── python/               # Python 检测框架 (kvd_detector)
-├── resources/                # 资源管理 (统一存放权重、聚类结果与报表)
+│   │   ├── kvd_core/         # 引擎实现，包含 LightGBM/ONNX 推理及特征提取 (LIEF)
+│   │   └── CMakeLists.txt
+│   └── python/               # Python 检测与训练框架 (kvd_detector)
+│       ├── kvd_detector/     # 包含主程序、特征提取、聚类及各模型训练逻辑
+│       ├── requirements.txt  # Python 依赖清单
+│       └── pyproject.toml    # 项目配置 (提供 kvd-scan 命令行)
+├── resources/                # 资源管理 (权重、聚类结果与报表)
 │   └── weights_cluster_eval/
-│       ├── weights/          # 模型权重 (*.txt, *.pkl)
-│       ├── cluster/          # 聚类结果与特征缓存
-│       └── eval/             # 评估报告与扫描结果
-├── data/                     # 预处理中间数据 (processed_lightgbm)
-├── benign_samples/           # 良性样本存放区 (不入库)
-├── malicious_samples/        # 恶意样本存放区 (不入库)
+│       ├── weights/          # 训练好的模型权重 (*.txt, *.pkl, *.onnx)
+│       ├── cluster/          # 家族分类器与聚类结果 (*.json)
+│       └── eval/             # 评估报告与混淆矩阵
+├── data/                     # 预处理特征中间数据目录
+├── benign_samples/           # 良性样本存放区 (供特征提取使用)
+├── malicious_samples/        # 恶意样本存放区 (供特征提取使用)
 ├── PROJECT_STRUCTURE.md      # 详细的目录规范说明
-└── README.md                 # 项目主文档
+├── feature_dictionary.md     # 详细的 PE 病毒检测特征字典说明
+└── README.md                 # 项目主文档 (本文档)
 ```
 
-## 环境要求
+## 🛠 环境要求
 
-- **操作系统**：Windows 10/11 (推荐) 或 Linux (x86_64)
-- **Python**：3.10 及以上
-- **C++ 编译**：CMake 3.24+，支持 C++17 的编译器 (如 MSVC, GCC, Clang)
+### Python 训练与调度环境
+- **Python**：3.8 及以上 (推荐 3.10)
+- **依赖库**：见 `src/python/requirements.txt` (包括 `lightgbm`, `fast-hdbscan`, `torch`, `optuna`, `onnxruntime` 等)
 
-## 安装指南
+### C++ 编译环境 (扫描内核)
+- **操作系统**：Windows 10/11 (当前 CMake 配置主要针对 Windows DLL 构建) 或 Linux (需适配 CMake)
+- **C++ 编译**：CMake 3.20+，支持 C++20 的编译器 (如 MSVC, GCC, Clang)
+- **第三方库依赖**：
+  - [LIEF](https://lief.re/) (PE 解析)
+  - [nlohmann_json](https://json.nlohmann.me/)
+  - **LightGBM C API** 与 **ONNX Runtime**
+  *(注意：在编译 C++ 内核前，需根据本机环境修改 `src/cpp/kvd_core/src/CMakeLists.txt` 中硬编码的 `ONNXRUNTIME_ROOT` 和 `LIGHTGBM_INCLUDE_DIR` 路径)*
 
-1. **克隆仓库**
-2. **配置 Python 环境**
+## 🚀 安装指南
+
+1. **配置 Python 环境**
    ```powershell
    python -m venv .venv
+   # Windows
    .\.venv\Scripts\Activate.ps1
+   # Linux / macOS
+   source .venv/bin/activate
+   
    pip install -r src/python/requirements.txt
+   # 可选：安装本地包以启用 `kvd-scan` 命令
+   pip install -e src/python/
    ```
-3. **编译 C++ 内核 (可选)**
+
+2. **配置并编译 C++ 内核 (按需)**
+   修改 `CMakeLists.txt` 中的依赖路径后：
    ```powershell
    cmake -S src/cpp -B build -DCMAKE_BUILD_TYPE=Release
    cmake --build build --config Release
    ```
+   编译产物 `axon_engine.dll` 将生成于 `build/bin` 目录下。
 
-## 快速使用
+## 💡 快速使用
 
-所有核心操作均通过 `src/python/kvd_detector/main.py` 入口脚本完成：
+项目的核心入口是 `src/python/kvd_detector/main.py`。你可以通过命令行参数执行全生命周期的任务：
 
 ### 1. 数据准备与特征提取
-从 `benign_samples/` 和 `malicious_samples/` 目录提取特征并生成处理后的数据：
+从指定的恶意和良性样本目录提取特征并生成用于训练的中间数据：
 ```bash
 python src/python/kvd_detector/main.py extract --output-dir data/processed_lightgbm --label-inference directory
 ```
 
-### 2. 模型训练 (全流程)
-一键执行特征提取、LightGBM 训练、路由系统训练、家族聚类及评估：
+### 2. 自动化训练流程
+**一键训练全流程** (依次执行特征提取、LightGBM 训练、路由系统训练、家族聚类及评估)：
 ```bash
 python src/python/kvd_detector/main.py train-all
 ```
 
-### 3. 独立模块训练
-- **AutoML 调优**：`python main.py auto-tune --trials 50`
-- **训练路由系统**：`python main.py train-routing`
-- **家族聚类训练**：`python main.py finetune --plot-pca`
+**分步独立训练**：
+- **基础模型预训练**：`python main.py pretrain`
+- **家族聚类与分类器发现**：`python main.py finetune --plot-pca`
+- **训练路由与专家系统**：`python main.py train-routing`
+- **训练困难样本攻坚模型**：`python main.py train-hardcase-dl`
+- **AutoML 超参调优**：`python main.py auto-tune`
+- **困难样本模型对比试验**：`python main.py hardcase-model-trials`
+
+### 3. 模型转换与部署
+生产环境推荐将所有权重统一转换为 ONNX 格式：
+```bash
+python src/python/kvd_detector/main.py convert-weights-onnx
+```
+转换成功后将在 `resources/weights_cluster_eval/weights/` 目录下生成 `*.onnx` 模型以及转换清单 `weights_onnx_manifest.json`。
 
 ### 4. 样本扫描
-- **扫描单文件**：`python src/python/kvd_detector/main.py scan --file-path path/to/sample.exe`
-- **递归扫描目录**：`python src/python/kvd_detector/main.py scan --dir-path path/to/dir --recursive`
+支持扫描单个文件或递归扫描目录：
+```bash
+# 扫描单文件
+python src/python/kvd_detector/main.py scan --file-path path/to/sample.exe
 
-### 5. 启动扫描服务 (IPC)
+# 递归扫描目录
+python src/python/kvd_detector/main.py scan --dir-path path/to/dir --recursive
+```
+
+### 5. 启动 IPC 扫描服务
+启动基于 IPC 的扫描服务端，便于与其他系统或进程集成：
 ```bash
 python src/python/kvd_detector/main.py serve
 ```
 
-### 6. 权重统一转换为 ONNX（推荐部署前执行）
-```bash
-python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resources/weights_cluster_eval/weights
-```
+## 📖 C++ 扫描引擎 DLL 调用
 
-## 配置说明
+编译生成的 `axon_engine.dll` 提供了高效的 C ABI 导出接口，支持通过 C/C++、Python (ctypes)、JavaScript (ffi-napi) 等语言进行跨平台调用。
 
-核心配置位于 `src/python/kvd_detector/main.py` 的 `config.config` 模块中，包括：
-- **路径配置**：`PROJECT_ROOT`, `RESOURCES_DIR`, `PROCESSED_DATA_DIR` 等。
-- **训练参数**：`DEFAULT_NUM_BOOST_ROUND`, `DEFAULT_MAX_FILE_SIZE` (默认 64KB)。
-- **聚类参数**：`DEFAULT_MIN_CLUSTER_SIZE`, `DEFAULT_MIN_SAMPLES`。
+### 核心接口
+- `kvd_create` / `kvd_destroy`：句柄的创建与销毁。
+- `kvd_validate_models`：校验模型及配置文件的完整性与有效性。
+- `kvd_scan_path` / `kvd_scan_bytes`：执行恶意软件扫描、特征提取及推理，返回 JSON 格式结果。
+- `kvd_free`：释放引擎内部分配的字符串内存。
 
-## 权重格式与 ONNX 优先部署
+详细导出定义请参考 `src/cpp/kvd_core/include/kvd/api.h`。
 
-### 1. 部署建议
-- 建议将 `resources/weights_cluster_eval/weights/` 下的部署权重统一准备为 `.onnx`，便于跨语言部署与环境统一。
-- 当前仓库已提供批量转换命令 `convert-weights-onnx`，会自动生成转换报告与 ONNX 清单。
-- 生产环境推荐将 `.onnx` 作为主交付格式，同时保留训练原始权重作为回溯与再训练资产。
-
-### 2. ONNX 转换命令
-```bash
-python src/python/kvd_detector/main.py convert-weights-onnx --weights-dir resources/weights_cluster_eval/weights
-```
-
-### 3. 转换产物
-- 典型 ONNX 产物包括：
-  - `lightgbm_model.onnx`
-  - `lightgbm_model_normal.onnx`
-  - `lightgbm_model_packed.onnx`
-  - `hardcase_lgb_ovr_class_0.onnx` ~ `hardcase_lgb_ovr_class_2.onnx`
-  - `hardcase_xgb_ovr_class_0.onnx` ~ `hardcase_xgb_ovr_class_2.onnx`
-  - `feature_scaler.onnx`
-  - `expert_normal_attention.onnx`
-  - `expert_packed_attention.onnx`
-  - `nn_expert_normal.onnx`
-  - `nn_expert_packed.onnx`
-  - `hardcase_dl_base_model.onnx`
-  - `hardcase_dl_model.onnx`
-  - `hardcase_dl_fn_model.onnx`
-- 转换过程会额外生成：
-  - `weights_onnx_manifest.json`（ONNX 清单）
-  - `weights_onnx_conversion_report.json`（转换报告，含 converted/skipped/failed）
-
-### 4. 与扫描流程的关系
-- C++ `kvd_core` 扫描链路当前仍直接加载 LightGBM 文本模型与 hardcase C++ manifest。
-- Python `scan` 命令当前默认使用 `lightgbm_model.txt` 与家族分类器路径。
-- ONNX 优先部署用于统一交付与引擎适配，若接入 ONNX Runtime 服务侧可直接消费上述 ONNX 产物与 manifest。
-
-## DLL 扫描引擎调用文档
-
-### 1. DLL 与导出接口
-
-- 编译后会生成两个 DLL：`axon_engine.dll`、`signature_engine.dll`。
-- 导出函数定义见 `src/cpp/kvd_core/include/kvd/api.h`，导出表见 `src/cpp/kvd_core/src/kvd.def`。
-- 核心导出函数：
-  - `kvd_create`
-  - `kvd_destroy`
-  - `kvd_scan_path`
-  - `kvd_scan_bytes`
-  - `kvd_scan_paths`
-  - `kvd_train_path`
-  - `kvd_train_paths`
-  - `kvd_train_from_path`
-  - `kvd_signature_flush`
-  - `kvd_free`
-  - `kvd_validate_models`
-  - `kvd_extract_pe_features`
-  - `kvd_extract_pe_features_batch`
-
-### 2. 通用调用约定
-
-- 调用约定：Windows 下为 `__cdecl`。
-- `kvd_create` 成功返回非空句柄，失败返回 `nullptr`。
-- 所有 `out_json` / `out_error` 输出缓冲区由 DLL 内部分配，调用方必须用 `kvd_free` 释放。
-- 扫描类接口返回值：`0` 为成功，`!=0` 为失败。
-- `kvd_extract_pe_features` 相关接口中，特征维度固定为 `1500`。
-
-`kvd_config` 字段：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| model_path | const char* | 主模型路径 |
-| model_normal_path | const char* | normal 路由模型路径 |
-| model_packed_path | const char* | packed 路由模型路径 |
-| family_classifier_json_path | const char* | 家族分类器 JSON 路径 |
-| allowed_scan_root | const char* | 允许扫描的根目录 |
-| max_file_size | unsigned int | 最大读取文件大小 |
-| prediction_threshold | float | 恶意判定阈值 |
-
-`kvd_validate_models` 主要返回码：
-
-| 返回码 | 含义 |
-|---|---|
-| 0 | 模型检查通过 |
-| -1 | 参数错误 |
-| -10 | 主模型缺失 |
-| -11 | 主模型无效 |
-| -12 | 路由模型配置不完整 |
-| -13 | normal 模型缺失 |
-| -14 | normal 模型无效 |
-| -15 | packed 模型缺失 |
-| -16 | packed 模型无效 |
-| -17 | 家族分类器缺失 |
-| -18 | 家族分类器无效 |
-| -100 | 内存分配失败 |
-
-扫描结果 JSON 典型字段：
-
-```json
-{
-  "is_malware": true,
-  "confidence": 0.98,
-  "axon_malware": true,
-  "axon_score": 0.96,
-  "signature_hit": false,
-  "signature_score": 0.0,
-  "signature_reason": "",
-  "error": "",
-  "malware_family": {
-    "family_name": "example_family",
-    "cluster_id": 12,
-    "is_new_family": false
-  }
-}
-```
-
-### 3. C++ 调用示例
-
-```cpp
-#include "kvd/api.h"
-#include <windows.h>
-#include <iostream>
-#include <string>
-
-int main() {
-  HMODULE mod = LoadLibraryA("axon_engine.dll");
-  if (!mod) return 1;
-
-  using kvd_create_fn = kvd_handle* (KVD_CALL*)(const kvd_config*);
-  using kvd_destroy_fn = void (KVD_CALL*)(kvd_handle*);
-  using kvd_scan_path_fn = int (KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
-  using kvd_validate_models_fn = int (KVD_CALL*)(const kvd_config*, char**, size_t*);
-  using kvd_free_fn = void (KVD_CALL*)(char*);
-
-  auto kvd_create_p = reinterpret_cast<kvd_create_fn>(GetProcAddress(mod, "kvd_create"));
-  auto kvd_destroy_p = reinterpret_cast<kvd_destroy_fn>(GetProcAddress(mod, "kvd_destroy"));
-  auto kvd_scan_path_p = reinterpret_cast<kvd_scan_path_fn>(GetProcAddress(mod, "kvd_scan_path"));
-  auto kvd_validate_models_p = reinterpret_cast<kvd_validate_models_fn>(GetProcAddress(mod, "kvd_validate_models"));
-  auto kvd_free_p = reinterpret_cast<kvd_free_fn>(GetProcAddress(mod, "kvd_free"));
-  if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_validate_models_p || !kvd_free_p) return 2;
-
-  kvd_config cfg{};
-  cfg.model_path = "resources/weights_cluster_eval/weights/lightgbm_model.txt";
-  cfg.model_normal_path = "resources/weights_cluster_eval/weights/lightgbm_model_normal.txt";
-  cfg.model_packed_path = "resources/weights_cluster_eval/weights/lightgbm_model_packed.txt";
-  cfg.family_classifier_json_path = "resources/weights_cluster_eval/cluster/family_classifier.json";
-  cfg.prediction_threshold = 0.5f;
-  cfg.max_file_size = 65536;
-
-  char* err = nullptr;
-  size_t err_len = 0;
-  int check = kvd_validate_models_p(&cfg, &err, &err_len);
-  if (check != 0) {
-    if (err && err_len > 0) {
-      std::cerr.write(err, static_cast<std::streamsize>(err_len));
-      std::cerr << std::endl;
-      kvd_free_p(err);
-    }
-    return 3;
-  }
-  if (err) kvd_free_p(err);
-
-  kvd_handle* h = kvd_create_p(&cfg);
-  if (!h) return 4;
-
-  char* out_json = nullptr;
-  size_t out_len = 0;
-  int rc = kvd_scan_path_p(h, "D:/samples/test.exe", &out_json, &out_len);
-  if (rc == 0 && out_json) {
-    std::cout.write(out_json, static_cast<std::streamsize>(out_len));
-    std::cout << std::endl;
-    kvd_free_p(out_json);
-  }
-
-  kvd_destroy_p(h);
-  return rc == 0 ? 0 : 5;
-}
-```
-
-### 4. Python 调用示例
-
-```python
-import ctypes
-import json
-
-class KvdConfig(ctypes.Structure):
-    _fields_ = [
-        ("model_path", ctypes.c_char_p),
-        ("model_normal_path", ctypes.c_char_p),
-        ("model_packed_path", ctypes.c_char_p),
-        ("family_classifier_json_path", ctypes.c_char_p),
-        ("allowed_scan_root", ctypes.c_char_p),
-        ("max_file_size", ctypes.c_uint),
-        ("prediction_threshold", ctypes.c_float),
-    ]
-
-dll = ctypes.CDLL("axon_engine.dll")
-dll.kvd_create.argtypes = [ctypes.POINTER(KvdConfig)]
-dll.kvd_create.restype = ctypes.c_void_p
-dll.kvd_validate_models.argtypes = [ctypes.POINTER(KvdConfig), ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
-dll.kvd_validate_models.restype = ctypes.c_int
-dll.kvd_destroy.argtypes = [ctypes.c_void_p]
-dll.kvd_scan_path.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
-dll.kvd_scan_path.restype = ctypes.c_int
-dll.kvd_free.argtypes = [ctypes.c_char_p]
-
-cfg = KvdConfig(
-    model_path=b"resources/weights_cluster_eval/weights/lightgbm_model.txt",
-    model_normal_path=b"resources/weights_cluster_eval/weights/lightgbm_model_normal.txt",
-    model_packed_path=b"resources/weights_cluster_eval/weights/lightgbm_model_packed.txt",
-    family_classifier_json_path=b"resources/weights_cluster_eval/cluster/family_classifier.json",
-    allowed_scan_root=None,
-    max_file_size=65536,
-    prediction_threshold=0.5,
-)
-
-err = ctypes.c_char_p()
-err_len = ctypes.c_size_t()
-check = dll.kvd_validate_models(ctypes.byref(cfg), ctypes.byref(err), ctypes.byref(err_len))
-if check != 0:
-    try:
-        msg = ctypes.string_at(err, err_len.value).decode("utf-8") if err.value else f"rc={check}"
-    finally:
-        if err.value:
-            dll.kvd_free(err)
-    raise RuntimeError(f"kvd_validate_models failed: {msg}")
-if err.value:
-    dll.kvd_free(err)
-
-h = dll.kvd_create(ctypes.byref(cfg))
-if not h:
-    raise RuntimeError("kvd_create failed")
-
-out_json = ctypes.c_char_p()
-out_len = ctypes.c_size_t()
-rc = dll.kvd_scan_path(h, b"D:/samples/test.exe", ctypes.byref(out_json), ctypes.byref(out_len))
-if rc != 0:
-    dll.kvd_destroy(h)
-    raise RuntimeError(f"kvd_scan_path failed: {rc}")
-
-raw = ctypes.string_at(out_json, out_len.value)
-result = json.loads(raw.decode("utf-8"))
-print(result)
-dll.kvd_free(out_json)
-dll.kvd_destroy(h)
-```
-
-### 5. JavaScript 调用示例
-
-依赖安装：
-
-```bash
-npm i ffi-napi ref-napi ref-struct-di
-```
-
-```javascript
-const ffi = require('ffi-napi')
-const ref = require('ref-napi')
-const StructDi = require('ref-struct-di')
-const Struct = StructDi(ref)
-
-const charPtr = ref.refType(ref.types.char)
-const charPtrPtr = ref.refType(charPtr)
-const sizeTPtr = ref.refType(ref.types.size_t)
-const voidPtr = ref.refType(ref.types.void)
-
-const KvdConfig = Struct({
-  model_path: charPtr,
-  model_normal_path: charPtr,
-  model_packed_path: charPtr,
-  family_classifier_json_path: charPtr,
-  allowed_scan_root: charPtr,
-  max_file_size: ref.types.uint,
-  prediction_threshold: ref.types.float
-})
-
-const kvd = ffi.Library('axon_engine', {
-  kvd_create: [voidPtr, [ref.refType(KvdConfig)]],
-  kvd_validate_models: ['int', [ref.refType(KvdConfig), charPtrPtr, sizeTPtr]],
-  kvd_destroy: ['void', [voidPtr]],
-  kvd_scan_path: ['int', [voidPtr, 'string', charPtrPtr, sizeTPtr]],
-  kvd_free: ['void', [charPtr]]
-})
-
-const cfg = new KvdConfig({
-  model_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model.txt\0'),
-  model_normal_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_normal.txt\0'),
-  model_packed_path: Buffer.from('resources/weights_cluster_eval/weights/lightgbm_model_packed.txt\0'),
-  family_classifier_json_path: Buffer.from('resources/weights_cluster_eval/cluster/family_classifier.json\0'),
-  allowed_scan_root: ref.NULL,
-  max_file_size: 65536,
-  prediction_threshold: 0.5
-})
-
-const errPtr = ref.alloc(charPtr)
-const errLen = ref.alloc(ref.types.size_t)
-const check = kvd.kvd_validate_models(cfg.ref(), errPtr, errLen)
-if (check !== 0) {
-  const p = errPtr.deref()
-  const msg = ref.isNull(p) ? `rc=${check}` : ref.readCString(p, 0)
-  if (!ref.isNull(p)) kvd.kvd_free(p)
-  throw new Error(`kvd_validate_models failed: ${msg}`)
-}
-const maybeErr = errPtr.deref()
-if (!ref.isNull(maybeErr)) kvd.kvd_free(maybeErr)
-
-const handle = kvd.kvd_create(cfg.ref())
-if (ref.isNull(handle)) {
-  throw new Error('kvd_create failed')
-}
-
-const outJsonPtr = ref.alloc(charPtr)
-const outLenPtr = ref.alloc(ref.types.size_t)
-const rc = kvd.kvd_scan_path(handle, 'D:/samples/test.exe', outJsonPtr, outLenPtr)
-if (rc !== 0) {
-  kvd.kvd_destroy(handle)
-  throw new Error(`kvd_scan_path failed: ${rc}`)
-}
-
-const jsonPtr = outJsonPtr.deref()
-const jsonText = ref.readCString(jsonPtr, 0)
-console.log(JSON.parse(jsonText))
-kvd.kvd_free(jsonPtr)
-kvd.kvd_destroy(handle)
-```
-
-### 6. 建议调用顺序
-
-1. 先调用 `kvd_validate_models` 检查模型文件可用性。
-2. 再调用 `kvd_create` 创建句柄。
-3. 扫描阶段调用 `kvd_scan_path` / `kvd_scan_bytes` / `kvd_scan_paths`。
-4. 每次读取完 JSON 输出后调用 `kvd_free`。
-5. 结束时调用 `kvd_destroy` 释放句柄。
-
-## 许可证
+## 📜 许可证
 
 本项目遵循 [LICENSE](LICENSE) 中的规定。
 
-## 感谢以下开源项目
+## 🙏 致谢
 
-本项目的开发离不开以下开源项目的支持，在此特别致谢：
-
-| 开源项目 | 许可证 | 说明 |
-|---------|--------|------|
-| [NumPy](https://numpy.org/) | BSD 3-Clause | Python 科学计算基础库 |
-| [SciPy](https://scipy.org/) | BSD 3-Clause | 科学计算 Python 库 |
-| [scikit-learn](https://scikit-learn.org/) | BSD 3-Clause | 机器学习基础库 |
-| [LightGBM](https://lightgbm.org/) | MIT | 高性能梯度提升框架 |
-| [fast-hdbscan](https://github.com/TutteInstitute/fast_hdbscan) | BSD 2-Clause | 高性能 HDBSCAN 聚类算法实现 |
-| [joblib](https://joblib.readthedocs.io/) | BSD 3-Clause | Python 轻量级流水线工具 |
-| [Matplotlib](https://matplotlib.org/) | PSF | Python 可视化绘图库 |
-| [pandas](https://pandas.pydata.org/) | BSD 3-Clause | 数据分析处理库 |
-| [Seaborn](https://seaborn.pydata.org/) | BSD 3-Clause | 基于 matplotlib 的统计数据可视化库 |
-| [PyTorch](https://pytorch.org/) | BSD 3-Clause | 深度学习框架 |
-| [Optuna](https://optuna.org/) | MIT | 自动超参数优化框架 |
-| [Hyperopt](http://hyperopt.github.io/hyperopt/) | BSD 3-Clause | 异步超参数优化库 |
-| [pefile](https://github.com/erocarrera/pefile) | MIT | Python PE 文件解析模块 |
-| [tqdm](https://tqdm.github.io/) | MIT | Python 进度条库 |
-| [ONNX](https://onnx.ai/) | Apache 2.0 | 开放式神经网络交换格式 |
-| [ONNX Runtime](https://onnxruntime.ai/) | MIT | 跨平台高性能 ML 推理加速器 |
-| [skl2onnx](https://onnx.ai/sklearn-onnx/) | Apache 2.0 | scikit-learn 模型转 ONNX 工具 |
-| [ONNX Script](https://github.com/microsoft/onnxscript) | Apache 2.0 | ONNX 模型编写工具 |
-| [ONNX Tools](https://github.com/onnx/onnx-tools) | Apache 2.0 | ONNX 模型处理工具 |
-| [nlohmann_json](https://json.nlohmann.me/) | MIT | C++ JSON 解析库 |
-| [LIEF](https://lief.re/) | Apache 2.0 | 可执行文件格式解析库 |
-
-所有开源项目均采用 permissive 许可证（BSD、MIT、Apache 2.0、PSF），允许自由使用、修改和分发。
+本项目的开发离不开众多优秀的开源项目的支持（包括但不限于 LightGBM, ONNX Runtime, LIEF, scikit-learn, fast-hdbscan, PyTorch 等），在此特别致谢所有采用 permissive 许可证（BSD、MIT、Apache 2.0 等）并无私奉献的开源社区。
