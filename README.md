@@ -41,8 +41,11 @@ Axon V2 旨在提供快速、准确且可扩展的恶意样本识别能力，不
 ├── data/                     # 预处理特征中间数据目录
 ├── benign_samples/           # 良性样本存放区 (供特征提取使用)
 ├── malicious_samples/        # 恶意样本存放区 (供特征提取使用)
-├── PROJECT_STRUCTURE.md      # 详细的目录规范说明
-├── feature_dictionary.md     # 详细的 PE 病毒检测特征字典说明
+├── .gitignore                # 顶层 Git 忽略文件
+├── LICENSE                   # 项目许可证
+├── PROJECT_STANDARDS.md      # 项目开发规范指南 (代码、文件、测试规范)
+├── PROJECT_STRUCTURE.md      # 目录结构职责与规范
+├── feature-dictionary.md     # 详细的 PE 病毒检测特征字典说明
 └── README.md                 # 项目主文档 (本文档)
 ```
 

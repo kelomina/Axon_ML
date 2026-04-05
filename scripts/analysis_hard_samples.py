@@ -383,7 +383,7 @@ def render_summary_report(output_dir: Path, per_file_stats: list[dict], top_feat
 
 
 def main() -> None:
-    project_root = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parent.parent
     default_cluster_dir = project_root / "resources" / "weights_cluster_eval" / "cluster"
     default_output_dir = project_root / "resources" / "weights_cluster_eval" / "eval" / "hard_samples_analysis"
     default_main_py = project_root / "src" / "python" / "kvd_detector" / "main.py"
