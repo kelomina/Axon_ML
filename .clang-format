@@ -1,0 +1,33 @@
+---
+# .clang-format
+Language: Cpp
+BasedOnStyle: Google
+
+# 缩进设置，遵循项目规范推荐的 4 个空格
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# 访问修饰符的缩进（public/private 等，相对 IndentWidth 偏移 -4 保持顶格）
+AccessModifierOffset: -4
+
+# 列宽限制 (增加至 120 以适应项目中较长的代码行)
+ColumnLimit: 120
+
+# 指针和引用的对齐方式 (左对齐，例如：void* a)
+PointerAlignment: Left
+
+# 允许短代码块在单行 (例如：if (ec) return; )
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Empty
+
+# 命名空间内不缩进
+NamespaceIndentation: None
+
+# 缩进 switch 语句中的 case 标签
+IndentCaseLabels: true
+
+# 启用头文件自动排序
+SortIncludes: true

@@ -5053,7 +5053,7 @@ def _collect_records():
     sources = [
         ('hard_samples', 'hard_samples_*.json'),
         ('false_positives', 'false_positives_*.json'),
-        ('false_negatives', 'false_negitives_*.json'),
+        ('false_negatives', 'false_negatives_*.json'),
     ]
     grouped = {}
     for name, pattern in sources:
@@ -5667,7 +5667,7 @@ def load_dataset():
     pkl_path = cluster_dir / "extracted_features.pkl"
     hard_path = _latest(cluster_dir, "hard_samples_*.json")
     fp_path = _latest(cluster_dir, "false_positives_*.json")
-    fn_path = _latest(cluster_dir, "false_negitives_*.json")
+    fn_path = _latest(cluster_dir, "false_negatives_*.json")
     if not pkl_path.exists() or hard_path is None or fp_path is None or fn_path is None:
         raise RuntimeError("缺少数据文件，无法执行模型试验")
     df = pd.read_pickle(pkl_path)
@@ -5923,7 +5923,7 @@ def _collect_low_importance_features():
     report_defs = [
         ('hard_samples', 'hard_samples_*.json'),
         ('false_positives', 'false_positives_*.json'),
-        ('false_negatives', 'false_negitives_*.json'),
+        ('false_negatives', 'false_negatives_*.json'),
     ]
     sum_abs_importance = {}
     max_abs_importance = {}
@@ -6069,7 +6069,7 @@ def _build_sample_weight_map():
     weight_map = {}
     hard_report = _latest_sample_report('hard_samples_*.json')
     fp_report = _latest_sample_report('false_positives_*.json')
-    fn_report = _latest_sample_report('false_negitives_*.json')
+    fn_report = _latest_sample_report('false_negatives_*.json')
     for item in _load_samples(hard_report):
         sid = _normalize_name(item.get('sample_id', ''))
         if sid:
@@ -9338,7 +9338,7 @@ def _export_train_all_sample_reports(logger):
     os.makedirs(output_dir, exist_ok=True)
     hard_path = os.path.join(output_dir, f'hard_samples_{timestamp}.json')
     fp_path = os.path.join(output_dir, f'false_positives_{timestamp}.json')
-    fn_path = os.path.join(output_dir, f'false_negitives_{timestamp}.json')
+    fn_path = os.path.join(output_dir, f'false_negatives_{timestamp}.json')
 
     hard_samples = []
     false_positive_samples = []

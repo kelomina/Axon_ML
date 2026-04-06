@@ -22,24 +22,25 @@
 namespace kvd {
 
 class LightGbmModel {
- public:
-  LightGbmModel() = default;
-  LightGbmModel(const LightGbmModel&) = delete;
-  LightGbmModel& operator=(const LightGbmModel&) = delete;
-  LightGbmModel(LightGbmModel&&) noexcept;
-  LightGbmModel& operator=(LightGbmModel&&) noexcept;
-  ~LightGbmModel();
+public:
+    LightGbmModel() = default;
+    LightGbmModel(const LightGbmModel&) = delete;
+    LightGbmModel& operator=(const LightGbmModel&) = delete;
+    LightGbmModel(LightGbmModel&&) noexcept;
+    LightGbmModel& operator=(LightGbmModel&&) noexcept;
+    ~LightGbmModel();
 
-  static std::optional<LightGbmModel> load_from_file(const std::string& path);
+    static std::optional<LightGbmModel> load_from_file(const std::string& path);
 
-  std::optional<float> predict_one(const std::vector<float>& features) const;
-  std::optional<std::vector<float>> predict_batch(const std::vector<float>& features, std::size_t row_count, std::size_t num_features) const;
+    std::optional<float> predict_one(const std::vector<float>& features) const;
+    std::optional<std::vector<float>> predict_batch(const std::vector<float>& features, std::size_t row_count,
+                                                    std::size_t num_features) const;
 
-  bool ok() const;
+    bool ok() const;
 
- private:
-  void* handle_ = nullptr;
-  int num_iterations_ = 0;
+private:
+    void* handle_ = nullptr;
+    int num_iterations_ = 0;
 };
 
-}
+}  // namespace kvd

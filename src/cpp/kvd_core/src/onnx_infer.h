@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -22,30 +23,29 @@
 namespace kvd {
 
 class OnnxModel {
- public:
-  OnnxModel() = default;
-  OnnxModel(const OnnxModel&) = delete;
-  OnnxModel& operator=(const OnnxModel&) = delete;
-  OnnxModel(OnnxModel&&) noexcept;
-  OnnxModel& operator=(OnnxModel&&) noexcept;
-  ~OnnxModel();
+public:
+    OnnxModel();
+    OnnxModel(const OnnxModel&) = delete;
+    OnnxModel& operator=(const OnnxModel&) = delete;
+    OnnxModel(OnnxModel&&) noexcept;
+    OnnxModel& operator=(OnnxModel&&) noexcept;
+    ~OnnxModel();
 
-  static std::optional<OnnxModel> load_from_file(const std::string& path);
+    static std::optional<OnnxModel> load_from_file(const std::string& path);
 
-  std::optional<float> predict_one(const std::vector<float>& features) const;
-  std::optional<std::vector<float>> predict_batch(const std::vector<float>& features, std::size_t row_count, std::size_t num_features) const;
+    std::optional<float> predict_one(const std::vector<float>& features) const;
+    std::optional<std::vector<float>> predict_batch(const std::vector<float>& features, std::size_t row_count,
+                                                    std::size_t num_features) const;
 
-  bool ok() const;
-  std::size_t get_input_size() const;
-  std::size_t get_output_size() const;
+    bool ok() const;
+    std::size_t get_input_size() const;
+    std::size_t get_output_size() const;
 
- private:
-  void* env_ = nullptr;
-  void* session_ = nullptr;
-  void* allocator_ = nullptr;
-  void* options_ = nullptr;
-  std::size_t input_size_ = 0;
-  std::size_t output_size_ = 0;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    std::size_t input_size_ = 0;
+    std::size_t output_size_ = 0;
 };
 
-}
+}  // namespace kvd
