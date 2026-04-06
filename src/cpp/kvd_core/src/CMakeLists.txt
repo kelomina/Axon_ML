@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 project(kvd LANGUAGES C CXX)
 
 set(KVD_SOURCES
@@ -14,8 +14,11 @@ set(KVD_SOURCES
   family_classifier.cpp
   sha256.cpp
   util_filesystem.cpp
-  kvd.def
 )
+
+if(WIN32)
+  list(APPEND KVD_SOURCES kvd.def)
+endif()
 
 add_library(axon_engine SHARED)
 target_sources(axon_engine PRIVATE ${KVD_SOURCES})
@@ -28,10 +31,25 @@ target_include_directories(signature_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/.
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(LIEF CONFIG REQUIRED)
 
-set(ONNXRUNTIME_ROOT "e:/Project/python/KoloVirusDetector_ML_V2-main/onnxruntime-win-x64-1.24.4")
+# Replace hardcoded ONNXRuntime path with find_package or fetch_content or user provided path
+# Here we use an option with a generic default or expect the user to provide ONNXRUNTIME_ROOT
+if(NOT DEFINED ONNXRUNTIME_ROOT)
+  if(WIN32)
+    set(ONNXRUNTIME_ROOT "C:/onnxruntime" CACHE PATH "Path to ONNX Runtime")
+  else()
+    set(ONNXRUNTIME_ROOT "/usr/local" CACHE PATH "Path to ONNX Runtime")
+  endif()
+endif()
+
 set(ONNXRUNTIME_INCLUDE_DIR "${ONNXRUNTIME_ROOT}/include")
-set(ONNXRUNTIME_LIBRARY "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
-set(ONNXRUNTIME_DLL "${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll")
+
+if(WIN32)
+  set(ONNXRUNTIME_LIBRARY "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
+  set(ONNXRUNTIME_DLL "${ONNXRUNTIME_ROOT}/lib/onnxruntime.dll")
+else()
+  set(ONNXRUNTIME_LIBRARY "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so")
+  set(ONNXRUNTIME_DLL "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so")
+endif()
 
 add_library(onnxruntime::onnxruntime SHARED IMPORTED)
 set_target_properties(onnxruntime::onnxruntime PROPERTIES
@@ -42,20 +60,24 @@ set_target_properties(onnxruntime::onnxruntime PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
 )
 
-add_library(onnxruntime_providers_shared SHARED IMPORTED)
-set_target_properties(onnxruntime_providers_shared PROPERTIES
-  IMPORTED_LOCATION_RELEASE "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
-  IMPORTED_IMPLIB_RELEASE "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.lib"
-  IMPORTED_LOCATION_DEBUG "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
-  IMPORTED_IMPLIB_DEBUG "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.lib"
-  INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
-)
+if(WIN32)
+  add_library(onnxruntime_providers_shared SHARED IMPORTED)
+  set_target_properties(onnxruntime_providers_shared PROPERTIES
+    IMPORTED_LOCATION_RELEASE "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
+    IMPORTED_IMPLIB_RELEASE "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.lib"
+    IMPORTED_LOCATION_DEBUG "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.dll"
+    IMPORTED_IMPLIB_DEBUG "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_shared.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
+  )
+endif()
 
-file(COPY "${ONNXRUNTIME_DLL}" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+if(EXISTS "${ONNXRUNTIME_DLL}")
+  file(COPY "${ONNXRUNTIME_DLL}" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
 
 find_path(LIGHTGBM_INCLUDE_DIR NAMES LightGBM/c_api.h)
-find_library(LIGHTGBM_LIBRARY_RELEASE NAMES lib_lightgbm PATH_SUFFIXES lib)
-find_library(LIGHTGBM_LIBRARY_DEBUG NAMES lib_lightgbm PATH_SUFFIXES debug/lib)
+find_library(LIGHTGBM_LIBRARY_RELEASE NAMES lightgbm lib_lightgbm PATH_SUFFIXES lib)
+find_library(LIGHTGBM_LIBRARY_DEBUG NAMES lightgbm lib_lightgbm PATH_SUFFIXES debug/lib)
 
 add_library(lightgbm::lightgbm UNKNOWN IMPORTED)
 set_target_properties(lightgbm::lightgbm PROPERTIES
@@ -64,38 +86,24 @@ set_target_properties(lightgbm::lightgbm PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${LIGHTGBM_INCLUDE_DIR}"
 )
 
-target_link_libraries(axon_engine
-  PUBLIC
-    nlohmann_json::nlohmann_json
-    LIEF::LIEF
-    lightgbm::lightgbm
-    onnxruntime::onnxruntime
-    onnxruntime_providers_shared
-    bcrypt
+set(KVD_LINK_LIBS
+  nlohmann_json::nlohmann_json
+  LIEF::LIEF
+  lightgbm::lightgbm
+  onnxruntime::onnxruntime
 )
-target_link_libraries(signature_engine
-  PUBLIC
-    nlohmann_json::nlohmann_json
-    LIEF::LIEF
-    lightgbm::lightgbm
-    onnxruntime::onnxruntime
-    onnxruntime_providers_shared
-    bcrypt
-)
+if(WIN32)
+  list(APPEND KVD_LINK_LIBS onnxruntime_providers_shared bcrypt)
+endif()
+
+target_link_libraries(axon_engine PUBLIC ${KVD_LINK_LIBS})
+target_link_libraries(signature_engine PUBLIC ${KVD_LINK_LIBS})
 
 target_compile_definitions(axon_engine PRIVATE KVD_BUILD_DLL=1 KVD_BUILD_AXON_ENGINE=1)
 target_compile_definitions(signature_engine PRIVATE KVD_BUILD_DLL=1 KVD_BUILD_SIGNATURE_ENGINE=1)
 
-# 移除硬编码的输出目录
-# set(AXON_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Axon")
-# set(SIG_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Signature")
-
-set_target_properties(axon_engine PROPERTIES
-  OUTPUT_NAME "axon_engine"
-)
-set_target_properties(signature_engine PROPERTIES
-  OUTPUT_NAME "signature_engine"
-)
+set_target_properties(axon_engine PROPERTIES OUTPUT_NAME "axon_engine")
+set_target_properties(signature_engine PROPERTIES OUTPUT_NAME "signature_engine")
 
 if(WIN32)
   target_link_options(axon_engine PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/kvd.def")

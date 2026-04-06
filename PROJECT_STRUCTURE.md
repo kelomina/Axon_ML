@@ -6,17 +6,22 @@
 ├── .gitignore                # 顶层 Git 忽略文件
 ├── LICENSE                   # 项目许可证
 ├── README.md                 # 项目总体说明
+├── PROJECT_STANDARDS.md      # 项目开发规范指南 (代码、文件、测试规范)
 ├── PROJECT_STRUCTURE.md      # 目录结构职责与规范 (本文档)
+├── feature-dictionary.md     # 详细的特征字典说明
 ├── build/                    # C++ 中间编译产物 (CMake 自动生成)
 ├── bin/                      # C++ 编译产物输出目录 (完全隔离，支持 Debug/Release)
 │   ├── Debug/                # Debug 配置输出
 │   └── Release/              # Release 配置输出
+├── scripts/                  # 辅助构建、部署、分析等自动化脚本
+│   └── analysis_hard_samples.py # 困难样本分析脚本
 ├── src/                      # 源代码根目录
 │   ├── cpp/                  # C++ 源代码
 │   │   ├── kvd_core/         # 核心扫描引擎模块
 │   │   │   ├── include/      # 公共头文件
 │   │   │   ├── src/          # 源代码实现
 │   │   │   ├── examples/     # 示例代码
+│   │   │   ├── tests/        # C++ 单元测试代码
 │   │   │   └── CMakeLists.txt
 │   │   └── CMakeLists.txt    # 顶层 C++ 构建配置
 │   └── python/               # Python 源代码
@@ -25,7 +30,10 @@
 │       │   ├── main.py       # 入口脚本
 │       │   └── ...           # 其他子包
 │       ├── requirements.txt  # Python 依赖清单
-│       └── pyproject.toml    # 符合 PEP 518/621 的 Python 项目配置
+│       ├── pyproject.toml    # 符合 PEP 518/621 的 Python 项目配置
+│       └── axon_ml.spec      # PyInstaller 打包配置文件
+├── tests/                    # Python 单元测试和集成测试代码 (与 src/ 结构保持一致)
+│   └── python/               # 对应 src/python/
 ├── resources/                # 统一资源目录
 │   └── weights_cluster_eval/ # 权重、聚类结果与测评报告
 │       ├── weights/          # 模型权重 (*.pth, *.pt, *.onnx, *.bin)

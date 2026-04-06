@@ -8,6 +8,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(KVD_BUILD_TESTS "Build tests" ON)
 option(KVD_BUILD_EXAMPLES "Build examples" ON)
+option(KVD_USE_ASAN "Enable AddressSanitizer" OFF)
+
+if(KVD_USE_ASAN)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+  elseif(MSVC)
+    add_compile_options(/fsanitize=address)
+  endif()
+endif()
 
 add_subdirectory(src)
 

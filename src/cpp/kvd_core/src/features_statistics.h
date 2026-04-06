@@ -22,7 +22,8 @@ namespace kvd {
 
 struct ByteSequenceResult;
 
-std::vector<float> extract_statistical_features(const std::vector<std::uint8_t>& padded_sequence, std::size_t orig_length);
+std::vector<float> extract_statistical_features(
+    const std::vector<std::uint8_t>& padded_sequence, std::size_t orig_length);
 std::vector<float> extract_statistical_features(const ByteSequenceResult& seq);
 
-}
+}  // namespace kvd
