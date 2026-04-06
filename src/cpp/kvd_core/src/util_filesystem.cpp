@@ -28,51 +28,85 @@ static bool contains_nul(const std::string& s) {
     return std::find(s.begin(), s.end(), '\0') != s.end();
 }
 
-static std::optional<std::wstring> multi_byte_to_wide(const std::string& s, unsigned int code_page, DWORD flags) {
-    if (s.empty()) { return std::wstring(); }
-    int len = MultiByteToWideChar(code_page, flags, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    if (len <= 0) { return std::nullopt; }
+static std::optional<std::wstring> multi_byte_to_wide(const std::string& s,
+                                                      unsigned int code_page,
+                                                      DWORD flags) {
+    if (s.empty()) {
+        return std::wstring();
+    }
+    int len = MultiByteToWideChar(code_page, flags, s.data(),
+                                  static_cast<int>(s.size()), nullptr, 0);
+    if (len <= 0) {
+        return std::nullopt;
+    }
     std::wstring w;
     w.resize(static_cast<std::size_t>(len));
-    int ok = MultiByteToWideChar(code_page, flags, s.data(), static_cast<int>(s.size()), w.data(), len);
-    if (ok != len) { return std::nullopt; }
+    int ok = MultiByteToWideChar(code_page, flags, s.data(),
+                                 static_cast<int>(s.size()), w.data(), len);
+    if (ok != len) {
+        return std::nullopt;
+    }
     return w;
 }
 
 static std::optional<std::wstring> utf8_or_ansi_to_wide(const std::string& s) {
     auto utf8 = multi_byte_to_wide(s, CP_UTF8, MB_ERR_INVALID_CHARS);
-    if (utf8) { return utf8; }
+    if (utf8) {
+        return utf8;
+    }
     return multi_byte_to_wide(s, CP_ACP, 0);
 }
 
 static std::wstring to_lower(std::wstring s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) {
+        return static_cast<wchar_t>(std::towlower(c));
+    });
     return s;
 }
 
-std::optional<std::filesystem::path> to_filesystem_path(const std::string& path) {
-    if (path.empty() || contains_nul(path)) { return std::nullopt; }
+std::optional<std::filesystem::path> to_filesystem_path(
+    const std::string& path) {
+    if (path.empty() || contains_nul(path)) {
+        return std::nullopt;
+    }
     auto w = utf8_or_ansi_to_wide(path);
-    if (!w) { return std::nullopt; }
+    if (!w) {
+        return std::nullopt;
+    }
     return std::filesystem::path(*w);
 }
 
-std::optional<std::string> validate_path(const std::string& path, const std::optional<std::string>& allowed_root) {
+std::optional<std::string> validate_path(
+    const std::string& path, const std::optional<std::string>& allowed_root) {
     auto p_opt = to_filesystem_path(path);
-    if (!p_opt) { return std::nullopt; }
+    if (!p_opt) {
+        return std::nullopt;
+    }
     std::error_code ec;
     std::filesystem::path p = std::filesystem::absolute(*p_opt, ec);
-    if (ec) { return std::nullopt; }
+    if (ec) {
+        return std::nullopt;
+    }
     p = std::filesystem::weakly_canonical(p, ec);
-    if (ec) { return std::nullopt; }
-    if (!std::filesystem::exists(p, ec) || ec) { return std::nullopt; }
+    if (ec) {
+        return std::nullopt;
+    }
+    if (!std::filesystem::exists(p, ec) || ec) {
+        return std::nullopt;
+    }
     if (allowed_root) {
         auto root_opt = to_filesystem_path(*allowed_root);
-        if (!root_opt) { return std::nullopt; }
+        if (!root_opt) {
+            return std::nullopt;
+        }
         std::filesystem::path root = std::filesystem::absolute(*root_opt, ec);
-        if (ec) { return std::nullopt; }
+        if (ec) {
+            return std::nullopt;
+        }
         root = std::filesystem::weakly_canonical(root, ec);
-        if (ec) { return std::nullopt; }
+        if (ec) {
+            return std::nullopt;
+        }
 
         std::wstring abs_p = p.wstring();
         std::wstring base = root.wstring();
@@ -81,9 +115,15 @@ std::optional<std::string> validate_path(const std::string& path, const std::opt
 
         if (abs_p == base) {
         } else {
-            if (!base.empty() && base.back() != L'\\' && base.back() != L'/') { base.push_back(L'\\'); }
-            if (abs_p.size() < base.size()) { return std::nullopt; }
-            if (abs_p.compare(0, base.size(), base) != 0) { return std::nullopt; }
+            if (!base.empty() && base.back() != L'\\' && base.back() != L'/') {
+                base.push_back(L'\\');
+            }
+            if (abs_p.size() < base.size()) {
+                return std::nullopt;
+            }
+            if (abs_p.compare(0, base.size(), base) != 0) {
+                return std::nullopt;
+            }
         }
     }
     auto u8 = p.u8string();
@@ -93,16 +133,23 @@ std::optional<std::string> validate_path(const std::string& path, const std::opt
 bool read_file_bytes(const std::string& path, std::vector<std::uint8_t>& out) {
     out.clear();
     auto p = to_filesystem_path(path);
-    if (!p) { return false; }
+    if (!p) {
+        return false;
+    }
     std::ifstream f(*p, std::ios::binary);
-    if (!f) { return false; }
+    if (!f) {
+        return false;
+    }
     f.seekg(0, std::ios::end);
     std::streamoff size = f.tellg();
-    if (size < 0) { return false; }
+    if (size < 0) {
+        return false;
+    }
     f.seekg(0, std::ios::beg);
     out.resize(static_cast<std::size_t>(size));
     if (!out.empty()) {
-        f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        f.read(reinterpret_cast<char*>(out.data()),
+               static_cast<std::streamsize>(out.size()));
         if (!f) {
             out.clear();
             return false;
@@ -111,17 +158,25 @@ bool read_file_bytes(const std::string& path, std::vector<std::uint8_t>& out) {
     return true;
 }
 
-bool read_file_bytes_seek(const std::string& path, std::size_t offset, std::size_t max_count,
+bool read_file_bytes_seek(const std::string& path, std::size_t offset,
+                          std::size_t max_count,
                           std::vector<std::uint8_t>& out) {
     out.clear();
     auto p = to_filesystem_path(path);
-    if (!p) { return false; }
+    if (!p) {
+        return false;
+    }
     std::ifstream f(*p, std::ios::binary);
-    if (!f) { return false; }
+    if (!f) {
+        return false;
+    }
     f.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    if (!f) { return false; }
+    if (!f) {
+        return false;
+    }
     out.resize(max_count);
-    f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(max_count));
+    f.read(reinterpret_cast<char*>(out.data()),
+           static_cast<std::streamsize>(max_count));
     std::streamsize read_count = f.gcount();
     if (read_count < 0) {
         out.clear();

@@ -23,7 +23,7 @@
 namespace kvd {
 
 class OnnxModel {
-public:
+   public:
     OnnxModel();
     OnnxModel(const OnnxModel&) = delete;
     OnnxModel& operator=(const OnnxModel&) = delete;
@@ -34,14 +34,15 @@ public:
     static std::optional<OnnxModel> load_from_file(const std::string& path);
 
     std::optional<float> predict_one(const std::vector<float>& features) const;
-    std::optional<std::vector<float>> predict_batch(const std::vector<float>& features, std::size_t row_count,
-                                                    std::size_t num_features) const;
+    std::optional<std::vector<float>> predict_batch(
+        const std::vector<float>& features, std::size_t row_count,
+        std::size_t num_features) const;
 
     bool ok() const;
     std::size_t get_input_size() const;
     std::size_t get_output_size() const;
 
-private:
+   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::size_t input_size_ = 0;

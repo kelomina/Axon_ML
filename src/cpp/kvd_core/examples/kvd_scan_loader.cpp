@@ -9,9 +9,12 @@
 #include <iostream>
 #include <string>
 
-static std::string get_arg_value(int argc, char** argv, const std::string& key) {
+static std::string get_arg_value(int argc, char** argv,
+                                 const std::string& key) {
     for (int i = 1; i + 1 < argc; ++i) {
-        if (argv[i] == key) { return std::string(argv[i + 1]); }
+        if (argv[i] == key) {
+            return std::string(argv[i + 1]);
+        }
     }
     return {};
 }
@@ -24,14 +27,18 @@ static bool has_flag(int argc, char** argv, const std::string& flag) {
 }
 
 static int usage() {
-    std::cerr << "Usage:\n"
-              << "  kvd_scan_loader --target <file> [--dll <axon_engine.dll>]\n"
-              << "                 [--model <lightgbm_model.txt>] [--model_normal <lightgbm_model_normal.txt>]\n"
-              << "                 [--model_packed <lightgbm_model_packed.txt>]\n"
-              << "                 [--onnx_model <model.onnx>] [--onnx_model_normal <model_normal.onnx>]\n"
-              << "                 [--onnx_model_packed <model_packed.onnx>]\n"
-              << "                 [--family <family_classifier.json>] [--allowed_root <dir>]\n"
-              << "                 [--max_file_size <bytes>] [--threshold <0..1>]\n";
+    std::cerr
+        << "Usage:\n"
+        << "  kvd_scan_loader --target <file> [--dll <axon_engine.dll>]\n"
+        << "                 [--model <lightgbm_model.txt>] [--model_normal "
+           "<lightgbm_model_normal.txt>]\n"
+        << "                 [--model_packed <lightgbm_model_packed.txt>]\n"
+        << "                 [--onnx_model <model.onnx>] [--onnx_model_normal "
+           "<model_normal.onnx>]\n"
+        << "                 [--onnx_model_packed <model_packed.onnx>]\n"
+        << "                 [--family <family_classifier.json>] "
+           "[--allowed_root <dir>]\n"
+        << "                 [--max_file_size <bytes>] [--threshold <0..1>]\n";
     return 2;
 }
 
@@ -54,20 +61,26 @@ static bool parse_f32(const std::string& s, float& out) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3 || has_flag(argc, argv, "--help")) { return usage(); }
+    if (argc < 3 || has_flag(argc, argv, "--help")) {
+        return usage();
+    }
 
     std::string dll_path = get_arg_value(argc, argv, "--dll");
     if (dll_path.empty()) dll_path = "axon_engine.dll";
 
     std::string target = get_arg_value(argc, argv, "--target");
-    if (target.empty()) { return usage(); }
+    if (target.empty()) {
+        return usage();
+    }
 
     std::string model_path = get_arg_value(argc, argv, "--model");
     std::string model_normal_path = get_arg_value(argc, argv, "--model_normal");
     std::string model_packed_path = get_arg_value(argc, argv, "--model_packed");
     std::string onnx_model_path = get_arg_value(argc, argv, "--onnx_model");
-    std::string onnx_model_normal_path = get_arg_value(argc, argv, "--onnx_model_normal");
-    std::string onnx_model_packed_path = get_arg_value(argc, argv, "--onnx_model_packed");
+    std::string onnx_model_normal_path =
+        get_arg_value(argc, argv, "--onnx_model_normal");
+    std::string onnx_model_packed_path =
+        get_arg_value(argc, argv, "--onnx_model_packed");
     std::string family_path = get_arg_value(argc, argv, "--family");
     std::string allowed_root = get_arg_value(argc, argv, "--allowed_root");
     std::string max_file_size_s = get_arg_value(argc, argv, "--max_file_size");
@@ -85,36 +98,51 @@ int main(int argc, char** argv) {
 
     auto get = [&](const char* name) -> FARPROC {
         FARPROC p = GetProcAddress(mod, name);
-        if (!p) { std::cerr << "GetProcAddress failed: " << name << "\n"; }
+        if (!p) {
+            std::cerr << "GetProcAddress failed: " << name << "\n";
+        }
         return p;
     };
 
     using kvd_create_fn = kvd_handle*(KVD_CALL*)(const kvd_config*);
     using kvd_destroy_fn = void(KVD_CALL*)(kvd_handle*);
-    using kvd_scan_path_fn = int(KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
-    using kvd_scan_bytes_fn = int(KVD_CALL*)(kvd_handle*, const unsigned char*, size_t, char**, size_t*);
+    using kvd_scan_path_fn =
+        int(KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
+    using kvd_scan_bytes_fn = int(KVD_CALL*)(kvd_handle*, const unsigned char*,
+                                             size_t, char**, size_t*);
     using kvd_free_fn = void(KVD_CALL*)(char*);
 
     auto kvd_create_p = reinterpret_cast<kvd_create_fn>(get("kvd_create"));
     auto kvd_destroy_p = reinterpret_cast<kvd_destroy_fn>(get("kvd_destroy"));
-    auto kvd_scan_path_p = reinterpret_cast<kvd_scan_path_fn>(get("kvd_scan_path"));
-    auto kvd_scan_bytes_p = reinterpret_cast<kvd_scan_bytes_fn>(get("kvd_scan_bytes"));
+    auto kvd_scan_path_p =
+        reinterpret_cast<kvd_scan_path_fn>(get("kvd_scan_path"));
+    auto kvd_scan_bytes_p =
+        reinterpret_cast<kvd_scan_bytes_fn>(get("kvd_scan_bytes"));
     auto kvd_free_p = reinterpret_cast<kvd_free_fn>(get("kvd_free"));
 
-    if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_scan_bytes_p || !kvd_free_p) { return 1; }
+    if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p ||
+        !kvd_scan_bytes_p || !kvd_free_p) {
+        return 1;
+    }
 
     kvd_config cfg{};
     if (!model_path.empty()) cfg.model_path = model_path.c_str();
-    if (!model_normal_path.empty()) cfg.model_normal_path = model_normal_path.c_str();
-    if (!model_packed_path.empty()) cfg.model_packed_path = model_packed_path.c_str();
+    if (!model_normal_path.empty())
+        cfg.model_normal_path = model_normal_path.c_str();
+    if (!model_packed_path.empty())
+        cfg.model_packed_path = model_packed_path.c_str();
     if (!onnx_model_path.empty()) cfg.onnx_model_path = onnx_model_path.c_str();
-    if (!onnx_model_normal_path.empty()) cfg.onnx_model_normal_path = onnx_model_normal_path.c_str();
-    if (!onnx_model_packed_path.empty()) cfg.onnx_model_packed_path = onnx_model_packed_path.c_str();
-    if (!family_path.empty()) cfg.family_classifier_json_path = family_path.c_str();
+    if (!onnx_model_normal_path.empty())
+        cfg.onnx_model_normal_path = onnx_model_normal_path.c_str();
+    if (!onnx_model_packed_path.empty())
+        cfg.onnx_model_packed_path = onnx_model_packed_path.c_str();
+    if (!family_path.empty())
+        cfg.family_classifier_json_path = family_path.c_str();
     if (!allowed_root.empty()) cfg.allowed_scan_root = allowed_root.c_str();
 
     unsigned int max_file_size = 0;
-    if (parse_u32(max_file_size_s, max_file_size)) cfg.max_file_size = max_file_size;
+    if (parse_u32(max_file_size_s, max_file_size))
+        cfg.max_file_size = max_file_size;
 
     float threshold = 0.0f;
     if (parse_f32(threshold_s, threshold)) cfg.prediction_threshold = threshold;

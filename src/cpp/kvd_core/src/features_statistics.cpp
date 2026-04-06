@@ -24,7 +24,8 @@
 
 namespace kvd {
 
-static double entropy_from_hist(const std::array<std::uint32_t, 256>& counts, std::size_t n) {
+static double entropy_from_hist(const std::array<std::uint32_t, 256>& counts,
+                                std::size_t n) {
     if (n == 0) return 0.0;
     double inv = 1.0 / static_cast<double>(n);
     double s = 0.0;
@@ -36,7 +37,8 @@ static double entropy_from_hist(const std::array<std::uint32_t, 256>& counts, st
     return (-s) / 8.0;
 }
 
-static float percentile_from_hist(const std::array<std::uint32_t, 256>& counts, std::size_t n, double q) {
+static float percentile_from_hist(const std::array<std::uint32_t, 256>& counts,
+                                  std::size_t n, double q) {
     if (n == 0) return 0.0f;
     double pos = (static_cast<double>(n) - 1.0) * q;
     std::size_t lo = static_cast<std::size_t>(std::floor(pos));
@@ -78,10 +80,13 @@ static float std_f32(const std::vector<float>& v) {
     return static_cast<float>(std::sqrt(acc / static_cast<double>(v.size())));
 }
 
-static ByteSequenceStats compute_stats_from_sequence(const std::vector<std::uint8_t>& padded_sequence, std::size_t n) {
+static ByteSequenceStats compute_stats_from_sequence(
+    const std::vector<std::uint8_t>& padded_sequence, std::size_t n) {
     ByteSequenceStats s;
     s.hist.fill(0);
-    if (n == 0) { return s; }
+    if (n == 0) {
+        return s;
+    }
     s.has_data = true;
     s.min_val = padded_sequence[0];
     s.max_val = padded_sequence[0];
@@ -115,7 +120,9 @@ std::vector<float> extract_statistical_features(const ByteSequenceResult& seq) {
     features.reserve(49);
 
     ByteSequenceStats stats = seq.stats;
-    if (!stats.has_data && n > 0) { stats = compute_stats_from_sequence(seq.padded_sequence, n); }
+    if (!stats.has_data && n > 0) {
+        stats = compute_stats_from_sequence(seq.padded_sequence, n);
+    }
 
     double mean_val = stats.mean;
     double m2 = stats.m2;
@@ -188,10 +195,12 @@ std::vector<float> extract_statistical_features(const ByteSequenceResult& seq) {
                 h[seq.padded_sequence[i]]++;
             }
             m /= static_cast<double>(seg_len);
-            sd = std::sqrt(std::max(0.0, sd / static_cast<double>(seg_len) - m * m));
+            sd = std::sqrt(
+                std::max(0.0, sd / static_cast<double>(seg_len) - m * m));
             features.push_back(static_cast<float>(m));
             features.push_back(static_cast<float>(sd));
-            features.push_back(static_cast<float>(entropy_from_hist(h, seg_len)));
+            features.push_back(
+                static_cast<float>(entropy_from_hist(h, seg_len)));
         }
     }
 
@@ -272,8 +281,8 @@ std::vector<float> extract_statistical_features(const ByteSequenceResult& seq) {
     return features;
 }
 
-std::vector<float> extract_statistical_features(const std::vector<std::uint8_t>& padded_sequence,
-                                                std::size_t orig_length) {
+std::vector<float> extract_statistical_features(
+    const std::vector<std::uint8_t>& padded_sequence, std::size_t orig_length) {
     std::size_t n = orig_length;
     if (n > padded_sequence.size()) n = padded_sequence.size();
 

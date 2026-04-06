@@ -23,14 +23,16 @@
 namespace kvd {
 
 class FamilyClassifier {
-public:
-    static std::optional<FamilyClassifier> load_from_json(const std::string& path);
+   public:
+    static std::optional<FamilyClassifier> load_from_json(
+        const std::string& path);
 
-    std::optional<ScanResultFamily> predict(const std::vector<float>& features) const;
+    std::optional<ScanResultFamily> predict(
+        const std::vector<float>& features) const;
 
     bool ok() const;
 
-private:
+   private:
     std::vector<int> cluster_ids_;
     std::vector<std::vector<float>> centroids_;
     std::vector<float> thresholds_;

@@ -44,14 +44,15 @@ struct ByteSequenceResult {
     ByteSequenceStats stats;
 };
 
-std::optional<ByteSequenceResult> extract_byte_sequence_from_path(const std::string& path, std::size_t max_file_size,
-                                                                  const std::optional<std::string>& allowed_root);
+std::optional<ByteSequenceResult> extract_byte_sequence_from_path(
+    const std::string& path, std::size_t max_file_size,
+    const std::optional<std::string>& allowed_root);
 
-std::optional<ByteSequenceResult> extract_byte_sequence_from_bytes(const std::uint8_t* bytes, std::size_t len,
-                                                                   std::size_t max_file_size);
+std::optional<ByteSequenceResult> extract_byte_sequence_from_bytes(
+    const std::uint8_t* bytes, std::size_t len, std::size_t max_file_size);
 
-std::vector<float> extract_combined_pe_features_from_path(const std::string& path,
-                                                          const std::optional<std::string>& allowed_root);
+std::vector<float> extract_combined_pe_features_from_path(
+    const std::string& path, const std::optional<std::string>& allowed_root);
 
 std::optional<std::vector<std::string>> extract_import_sequence_from_path(
     const std::string& path, const std::optional<std::string>& allowed_root);

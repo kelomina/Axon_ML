@@ -65,22 +65,33 @@ typedef enum kvd_model_check_result {
 KVD_API kvd_handle* KVD_CALL kvd_create(const kvd_config* config);
 KVD_API void KVD_CALL kvd_destroy(kvd_handle* handle);
 
-KVD_API int KVD_CALL kvd_scan_path(kvd_handle* handle, const char* path, char** out_json, size_t* out_len);
-KVD_API int KVD_CALL kvd_scan_bytes(kvd_handle* handle, const unsigned char* bytes, size_t len, char** out_json,
+KVD_API int KVD_CALL kvd_scan_path(kvd_handle* handle, const char* path,
+                                   char** out_json, size_t* out_len);
+KVD_API int KVD_CALL kvd_scan_bytes(kvd_handle* handle,
+                                    const unsigned char* bytes, size_t len,
+                                    char** out_json, size_t* out_len);
+KVD_API int KVD_CALL kvd_scan_paths(kvd_handle* handle, const char** paths,
+                                    size_t count, char** out_json,
                                     size_t* out_len);
-KVD_API int KVD_CALL kvd_scan_paths(kvd_handle* handle, const char** paths, size_t count, char** out_json,
+KVD_API int KVD_CALL kvd_train_path(kvd_handle* handle, const char* path,
+                                    int label, char** out_json,
                                     size_t* out_len);
-KVD_API int KVD_CALL kvd_train_path(kvd_handle* handle, const char* path, int label, char** out_json, size_t* out_len);
-KVD_API int KVD_CALL kvd_train_paths(kvd_handle* handle, const char** paths, size_t count, int label, char** out_json,
+KVD_API int KVD_CALL kvd_train_paths(kvd_handle* handle, const char** paths,
+                                     size_t count, int label, char** out_json,
                                      size_t* out_len);
-KVD_API int KVD_CALL kvd_train_from_path(kvd_handle* handle, const char* path, int label, char** out_json,
+KVD_API int KVD_CALL kvd_train_from_path(kvd_handle* handle, const char* path,
+                                         int label, char** out_json,
                                          size_t* out_len);
 KVD_API void KVD_CALL kvd_signature_flush(kvd_handle* handle);
 KVD_API void KVD_CALL kvd_free(char* p);
-KVD_API int KVD_CALL kvd_validate_models(const kvd_config* config, char** out_error, size_t* out_len);
-KVD_API int KVD_CALL kvd_extract_pe_features(const char* path, float* out_features, size_t out_len);
-KVD_API int KVD_CALL kvd_extract_pe_features_batch(const char** paths, size_t count, float* out_features,
-                                                   size_t feature_dim, int* out_status, unsigned int thread_count);
+KVD_API int KVD_CALL kvd_validate_models(const kvd_config* config,
+                                         char** out_error, size_t* out_len);
+KVD_API int KVD_CALL kvd_extract_pe_features(const char* path,
+                                             float* out_features,
+                                             size_t out_len);
+KVD_API int KVD_CALL kvd_extract_pe_features_batch(
+    const char** paths, size_t count, float* out_features, size_t feature_dim,
+    int* out_status, unsigned int thread_count);
 
 KVD_API size_t KVD_CALL kvd_get_pe_feature_dimension(void);
 

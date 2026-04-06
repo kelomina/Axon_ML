@@ -10,9 +10,12 @@
 #include <iostream>
 #include <string>
 
-static std::string get_arg_value(int argc, char** argv, const std::string& key) {
+static std::string get_arg_value(int argc, char** argv,
+                                 const std::string& key) {
     for (int i = 1; i + 1 < argc; ++i) {
-        if (argv[i] == key) { return std::string(argv[i + 1]); }
+        if (argv[i] == key) {
+            return std::string(argv[i + 1]);
+        }
     }
     return {};
 }
@@ -26,10 +29,14 @@ static bool has_flag(int argc, char** argv, const std::string& flag) {
 
 static int usage() {
     std::cerr << "Usage:\n"
-              << "  kvd_dll_selftest [--dll <dll_path>] [--target <file>] [--model <model.txt>]\n"
-              << "                   [--model_normal <model_normal.txt>] [--model_packed <model_packed.txt>]\n"
-              << "                   [--family <family_classifier.json>] [--allowed_root <dir>]\n"
-              << "                   [--max_file_size <bytes>] [--threshold <0..1>]\n";
+              << "  kvd_dll_selftest [--dll <dll_path>] [--target <file>] "
+                 "[--model <model.txt>]\n"
+              << "                   [--model_normal <model_normal.txt>] "
+                 "[--model_packed <model_packed.txt>]\n"
+              << "                   [--family <family_classifier.json>] "
+                 "[--allowed_root <dir>]\n"
+              << "                   [--max_file_size <bytes>] [--threshold "
+                 "<0..1>]\n";
     return 2;
 }
 
@@ -54,14 +61,19 @@ static bool parse_f32(const std::string& s, float& out) {
 #if defined(_WIN32)
 static std::string current_exe_path() {
     char path[MAX_PATH];
-    DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
-    if (n == 0 || n >= sizeof(path)) { return {}; }
+    DWORD n =
+        GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
+    if (n == 0 || n >= sizeof(path)) {
+        return {};
+    }
     return std::string(path, path + n);
 }
 #endif
 
 int main(int argc, char** argv) {
-    if (has_flag(argc, argv, "--help")) { return usage(); }
+    if (has_flag(argc, argv, "--help")) {
+        return usage();
+    }
 
 #if !defined(_WIN32)
     std::cerr << "This program supports Windows only.\n";
@@ -93,33 +105,45 @@ int main(int argc, char** argv) {
 
     auto get = [&](const char* name) -> FARPROC {
         FARPROC p = GetProcAddress(mod, name);
-        if (!p) { std::cerr << "GetProcAddress failed: " << name << "\n"; }
+        if (!p) {
+            std::cerr << "GetProcAddress failed: " << name << "\n";
+        }
         return p;
     };
 
     using kvd_create_fn = kvd_handle*(KVD_CALL*)(const kvd_config*);
     using kvd_destroy_fn = void(KVD_CALL*)(kvd_handle*);
-    using kvd_scan_path_fn = int(KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
+    using kvd_scan_path_fn =
+        int(KVD_CALL*)(kvd_handle*, const char*, char**, size_t*);
     using kvd_free_fn = void(KVD_CALL*)(char*);
-    using kvd_validate_models_fn = int(KVD_CALL*)(const kvd_config*, char**, size_t*);
+    using kvd_validate_models_fn =
+        int(KVD_CALL*)(const kvd_config*, char**, size_t*);
 
     auto kvd_create_p = reinterpret_cast<kvd_create_fn>(get("kvd_create"));
     auto kvd_destroy_p = reinterpret_cast<kvd_destroy_fn>(get("kvd_destroy"));
-    auto kvd_scan_path_p = reinterpret_cast<kvd_scan_path_fn>(get("kvd_scan_path"));
+    auto kvd_scan_path_p =
+        reinterpret_cast<kvd_scan_path_fn>(get("kvd_scan_path"));
     auto kvd_free_p = reinterpret_cast<kvd_free_fn>(get("kvd_free"));
-    auto kvd_validate_models_p = reinterpret_cast<kvd_validate_models_fn>(GetProcAddress(mod, "kvd_validate_models"));
+    auto kvd_validate_models_p = reinterpret_cast<kvd_validate_models_fn>(
+        GetProcAddress(mod, "kvd_validate_models"));
 
-    if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_free_p) { return 1; }
+    if (!kvd_create_p || !kvd_destroy_p || !kvd_scan_path_p || !kvd_free_p) {
+        return 1;
+    }
 
     kvd_config cfg{};
     if (!model_path.empty()) cfg.model_path = model_path.c_str();
-    if (!model_normal_path.empty()) cfg.model_normal_path = model_normal_path.c_str();
-    if (!model_packed_path.empty()) cfg.model_packed_path = model_packed_path.c_str();
-    if (!family_path.empty()) cfg.family_classifier_json_path = family_path.c_str();
+    if (!model_normal_path.empty())
+        cfg.model_normal_path = model_normal_path.c_str();
+    if (!model_packed_path.empty())
+        cfg.model_packed_path = model_packed_path.c_str();
+    if (!family_path.empty())
+        cfg.family_classifier_json_path = family_path.c_str();
     if (!allowed_root.empty()) cfg.allowed_scan_root = allowed_root.c_str();
 
     unsigned int max_file_size = 0;
-    if (parse_u32(max_file_size_s, max_file_size)) cfg.max_file_size = max_file_size;
+    if (parse_u32(max_file_size_s, max_file_size))
+        cfg.max_file_size = max_file_size;
     float threshold = 0.0f;
     if (parse_f32(threshold_s, threshold)) cfg.prediction_threshold = threshold;
 
@@ -128,7 +152,8 @@ int main(int argc, char** argv) {
         size_t err_len = 0;
         int vrc = kvd_validate_models_p(&cfg, &err, &err_len);
         std::cout << "{\"validate_rc\":" << vrc << ",\"validate_msg\":\"";
-        if (err && err_len > 0) std::cout.write(err, static_cast<std::streamsize>(err_len));
+        if (err && err_len > 0)
+            std::cout.write(err, static_cast<std::streamsize>(err_len));
         std::cout << "\"}\n";
         if (err) kvd_free_p(err);
     }

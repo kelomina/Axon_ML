@@ -25,12 +25,15 @@
 
 namespace kvd {
 
-static double entropy_u8(const std::vector<std::uint8_t>& data, std::size_t start, std::size_t end) {
+static double entropy_u8(const std::vector<std::uint8_t>& data,
+                         std::size_t start, std::size_t end) {
     std::size_t n = end > start ? (end - start) : 0;
     if (n == 0) return 0.0;
     std::array<std::uint32_t, 256> counts{};
     counts.fill(0);
-    for (std::size_t i = start; i < end; ++i) { counts[data[i]]++; }
+    for (std::size_t i = start; i < end; ++i) {
+        counts[data[i]]++;
+    }
     double inv = 1.0 / static_cast<double>(n);
     double s = 0.0;
     for (std::size_t i = 0; i < 256; ++i) {
@@ -66,12 +69,14 @@ static double percentile_f64(std::vector<double> v, double q) {
     return a + (b - a) * w;
 }
 
-std::unordered_map<std::string, float> extract_file_attributes(const std::string& path,
-                                                               const std::optional<std::string>& allowed_root) {
+std::unordered_map<std::string, float> extract_file_attributes(
+    const std::string& path, const std::optional<std::string>& allowed_root) {
     std::unordered_map<std::string, float> features;
 
     auto valid = validate_path(path, allowed_root);
-    if (!valid) { return features; }
+    if (!valid) {
+        return features;
+    }
 
     std::error_code ec;
     std::uintmax_t file_size = 0;
@@ -81,23 +86,32 @@ std::unordered_map<std::string, float> extract_file_attributes(const std::string
     } else {
         ec = std::make_error_code(std::errc::invalid_argument);
     }
-    if (ec) { return features; }
+    if (ec) {
+        return features;
+    }
 
     features["size"] = static_cast<float>(file_size);
-    features["log_size"] = static_cast<float>(std::log(static_cast<double>(file_size) + 1.0));
+    features["log_size"] =
+        static_cast<float>(std::log(static_cast<double>(file_size) + 1.0));
 
     static constexpr std::size_t ENTROPY_SAMPLE_SIZE = 10240;
     static constexpr std::size_t ENTROPY_BLOCK_SIZE = 2048;
 
     std::vector<std::uint8_t> sample;
-    if (!read_file_bytes_seek(*valid, 0, ENTROPY_SAMPLE_SIZE, sample)) { sample.clear(); }
+    if (!read_file_bytes_seek(*valid, 0, ENTROPY_SAMPLE_SIZE, sample)) {
+        sample.clear();
+    }
 
     double overall_entropy = entropy_u8(sample, 0, sample.size());
     std::vector<double> block_entropies;
     if (!sample.empty()) {
-        for (std::size_t start = 0; start < sample.size(); start += ENTROPY_BLOCK_SIZE) {
-            std::size_t end = std::min(sample.size(), start + ENTROPY_BLOCK_SIZE);
-            if (end > start) { block_entropies.push_back(entropy_u8(sample, start, end)); }
+        for (std::size_t start = 0; start < sample.size();
+             start += ENTROPY_BLOCK_SIZE) {
+            std::size_t end =
+                std::min(sample.size(), start + ENTROPY_BLOCK_SIZE);
+            if (end > start) {
+                block_entropies.push_back(entropy_u8(sample, start, end));
+            }
         }
     }
 
@@ -105,7 +119,8 @@ std::unordered_map<std::string, float> extract_file_attributes(const std::string
     double max_entropy = overall_entropy;
     double entropy_std = 0.0;
     if (!block_entropies.empty()) {
-        auto mm = std::minmax_element(block_entropies.begin(), block_entropies.end());
+        auto mm =
+            std::minmax_element(block_entropies.begin(), block_entropies.end());
         min_entropy = *mm.first;
         max_entropy = *mm.second;
         entropy_std = std_f64(block_entropies);
@@ -114,13 +129,17 @@ std::unordered_map<std::string, float> extract_file_attributes(const std::string
     features["file_entropy_avg"] = static_cast<float>(overall_entropy);
     features["file_entropy_min"] = static_cast<float>(min_entropy);
     features["file_entropy_max"] = static_cast<float>(max_entropy);
-    features["file_entropy_range"] = static_cast<float>(max_entropy - min_entropy);
+    features["file_entropy_range"] =
+        static_cast<float>(max_entropy - min_entropy);
     features["file_entropy_std"] = static_cast<float>(entropy_std);
 
     if (!block_entropies.empty()) {
-        features["file_entropy_q25"] = static_cast<float>(percentile_f64(block_entropies, 0.25));
-        features["file_entropy_q75"] = static_cast<float>(percentile_f64(block_entropies, 0.75));
-        features["file_entropy_median"] = static_cast<float>(percentile_f64(block_entropies, 0.5));
+        features["file_entropy_q25"] =
+            static_cast<float>(percentile_f64(block_entropies, 0.25));
+        features["file_entropy_q75"] =
+            static_cast<float>(percentile_f64(block_entropies, 0.75));
+        features["file_entropy_median"] =
+            static_cast<float>(percentile_f64(block_entropies, 0.5));
 
         int high = 0;
         int low = 0;
@@ -129,9 +148,11 @@ std::unordered_map<std::string, float> extract_file_attributes(const std::string
             if (e < 0.2) low++;
         }
         features["high_entropy_ratio"] =
-            static_cast<float>(static_cast<double>(high) / static_cast<double>(block_entropies.size()));
+            static_cast<float>(static_cast<double>(high) /
+                               static_cast<double>(block_entropies.size()));
         features["low_entropy_ratio"] =
-            static_cast<float>(static_cast<double>(low) / static_cast<double>(block_entropies.size()));
+            static_cast<float>(static_cast<double>(low) /
+                               static_cast<double>(block_entropies.size()));
 
         if (block_entropies.size() > 1) {
             std::vector<double> diffs;
@@ -165,10 +186,11 @@ std::unordered_map<std::string, float> extract_file_attributes(const std::string
             if (b == 0) zero++;
             if (b >= 32 && b <= 126) printable++;
         }
-        features["zero_byte_ratio"] =
-            static_cast<float>(static_cast<double>(zero) / static_cast<double>(sample.size()));
+        features["zero_byte_ratio"] = static_cast<float>(
+            static_cast<double>(zero) / static_cast<double>(sample.size()));
         features["printable_byte_ratio"] =
-            static_cast<float>(static_cast<double>(printable) / static_cast<double>(sample.size()));
+            static_cast<float>(static_cast<double>(printable) /
+                               static_cast<double>(sample.size()));
     } else {
         features["zero_byte_ratio"] = 0.0f;
         features["printable_byte_ratio"] = 0.0f;

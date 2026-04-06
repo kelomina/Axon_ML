@@ -60,37 +60,51 @@ static constexpr std::size_t OVERLAY_ENTROPY_MIN_SIZE = 512;
 static constexpr std::size_t LARGE_OVERLAY_THRESHOLD = 1048576;
 
 static constexpr std::array<const char*, 18> SYSTEM_DLLS = {
-    "kernel32", "user32",  "gdi32", "advapi32", "ole32",  "oleaut32", "shell32",  "comdlg32", "ws2_32",
-    "wininet",  "crypt32", "ntdll", "msvcrt",   "rpcrt4", "shlwapi",  "comctl32", "version",  "wintrust"};
+    "kernel32", "user32",   "gdi32",   "advapi32", "ole32",   "oleaut32",
+    "shell32",  "comdlg32", "ws2_32",  "wininet",  "crypt32", "ntdll",
+    "msvcrt",   "rpcrt4",   "shlwapi", "comctl32", "version", "wintrust"};
 
-static constexpr std::array<const char*, 9> COMMON_SECTIONS = {".text", ".data",  ".rdata", ".rsrc", ".reloc",
-                                                               ".tls",  ".pdata", ".idata", ".edata"};
+static constexpr std::array<const char*, 9> COMMON_SECTIONS = {
+    ".text", ".data",  ".rdata", ".rsrc", ".reloc",
+    ".tls",  ".pdata", ".idata", ".edata"};
 
 static constexpr std::array<const char*, 12> PACKER_SECTION_KEYWORDS = {
-    "upx", "aspack", "fsg", "mpress", "petite", "pec2to", "nspack", "telock", "themida", "vmp", "vmprotect", "enigma"};
+    "upx",    "aspack", "fsg",     "mpress", "petite",    "pec2to",
+    "nspack", "telock", "themida", "vmp",    "vmprotect", "enigma"};
 
 static constexpr std::array<const char*, 12> NETWORK_API_KEYWORDS = {
-    "internet", "http", "url", "socket", "connect", "send", "recv", "wsastartup", "wininet", "ws2_32", "dns", "wget"};
+    "internet", "http",       "url",     "socket", "connect", "send",
+    "recv",     "wsastartup", "wininet", "ws2_32", "dns",     "wget"};
 static constexpr std::array<const char*, 13> PROCESS_API_KEYWORDS = {
-    "createprocess",  "openprocess",         "terminateprocess", "writeprocessmemory", "readprocessmemory",
-    "virtualallocex", "createremotethread",  "getprocaddress",   "loadlibrary",        "winexec",
-    "shellexecute",   "rtlcreateuserthread", "ntcreateprocess"};
+    "createprocess",      "openprocess",
+    "terminateprocess",   "writeprocessmemory",
+    "readprocessmemory",  "virtualallocex",
+    "createremotethread", "getprocaddress",
+    "loadlibrary",        "winexec",
+    "shellexecute",       "rtlcreateuserthread",
+    "ntcreateprocess"};
 static constexpr std::array<const char*, 12> FILESYSTEM_API_KEYWORDS = {
-    "createfile",        "readfile",          "writefile",     "deletefile",   "movefile",        "copyfile",
-    "setfileattributes", "getfileattributes", "findfirstfile", "findnextfile", "createdirectory", "removedirectory"};
+    "createfile",    "readfile",     "writefile",         "deletefile",
+    "movefile",      "copyfile",     "setfileattributes", "getfileattributes",
+    "findfirstfile", "findnextfile", "createdirectory",   "removedirectory"};
 static constexpr std::array<const char*, 12> REGISTRY_API_KEYWORDS = {
-    "regopenkey",  "regcreatekey", "regsetvalue",  "regqueryvalue",      "regdeletevalue", "regdeletekey",
-    "regclosekey", "regenumkey",   "regenumvalue", "regconnectregistry", "regloadkey",     "regsavekey"};
+    "regopenkey",     "regcreatekey",       "regsetvalue", "regqueryvalue",
+    "regdeletevalue", "regdeletekey",       "regclosekey", "regenumkey",
+    "regenumvalue",   "regconnectregistry", "regloadkey",  "regsavekey"};
 
 static std::vector<std::filesystem::path> selector_candidates() {
     std::vector<std::filesystem::path> out;
     const char* env_path = std::getenv("KVD_FEATURE_SELECTOR_PATH");
-    if (env_path && *env_path) { out.emplace_back(std::filesystem::path(env_path)); }
+    if (env_path && *env_path) {
+        out.emplace_back(std::filesystem::path(env_path));
+    }
     std::error_code ec;
     std::filesystem::path base = std::filesystem::current_path(ec);
     if (!ec) {
-        out.emplace_back(base / "resources" / "weights_cluster_eval" / "weights" / "feature_selector.json");
-        out.emplace_back(base / "resources" / "weights" / "feature_selector.json");
+        out.emplace_back(base / "resources" / "weights_cluster_eval" /
+                         "weights" / "feature_selector.json");
+        out.emplace_back(base / "resources" / "weights" /
+                         "feature_selector.json");
     }
     return out;
 }
@@ -99,35 +113,49 @@ static std::unordered_set<std::size_t> load_removed_pe_feature_indices() {
     std::unordered_set<std::size_t> removed;
     for (const auto& path : selector_candidates()) {
         std::ifstream in(path, std::ios::in);
-        if (!in) { continue; }
+        if (!in) {
+            continue;
+        }
         try {
             nlohmann::json j;
             in >> j;
             auto arr = j.value("removed_indices", nlohmann::json::array());
-            if (!arr.is_array()) { continue; }
+            if (!arr.is_array()) {
+                continue;
+            }
             for (const auto& v : arr) {
                 std::int64_t global_idx = -1;
                 if (v.is_number_integer()) {
                     global_idx = v.get<std::int64_t>();
                 } else if (v.is_number_unsigned()) {
-                    global_idx = static_cast<std::int64_t>(v.get<std::uint64_t>());
+                    global_idx =
+                        static_cast<std::int64_t>(v.get<std::uint64_t>());
                 } else {
                     continue;
                 }
-                if (global_idx < static_cast<std::int64_t>(STAT_FEATURE_DIM)) { continue; }
-                std::int64_t pe_idx = global_idx - static_cast<std::int64_t>(STAT_FEATURE_DIM);
-                if (pe_idx >= 0 && pe_idx < static_cast<std::int64_t>(PE_FEATURE_VECTOR_DIM)) {
+                if (global_idx < static_cast<std::int64_t>(STAT_FEATURE_DIM)) {
+                    continue;
+                }
+                std::int64_t pe_idx =
+                    global_idx - static_cast<std::int64_t>(STAT_FEATURE_DIM);
+                if (pe_idx >= 0 &&
+                    pe_idx < static_cast<std::int64_t>(PE_FEATURE_VECTOR_DIM)) {
                     removed.insert(static_cast<std::size_t>(pe_idx));
                 }
             }
-            if (!removed.empty()) { break; }
-        } catch (...) { continue; }
+            if (!removed.empty()) {
+                break;
+            }
+        } catch (...) {
+            continue;
+        }
     }
     return removed;
 }
 
 static const std::unordered_set<std::size_t>& removed_pe_feature_indices() {
-    static const std::unordered_set<std::size_t> cached = load_removed_pe_feature_indices();
+    static const std::unordered_set<std::size_t> cached =
+        load_removed_pe_feature_indices();
     return cached;
 }
 
@@ -177,14 +205,18 @@ static void l2_normalize(std::vector<float>& v) {
     for (float& x : v) x /= n;
 }
 
-static float get_or_zero(const std::unordered_map<std::string, float>& m, const std::string& key) {
+static float get_or_zero(const std::unordered_map<std::string, float>& m,
+                         const std::string& key) {
     auto it = m.find(key);
     if (it == m.end()) return 0.0f;
     return it->second;
 }
 
 static float safe_ratio(float numerator, float denominator) {
-    if (!std::isfinite(numerator) || !std::isfinite(denominator) || denominator <= 0.0f) { return 0.0f; }
+    if (!std::isfinite(numerator) || !std::isfinite(denominator) ||
+        denominator <= 0.0f) {
+        return 0.0f;
+    }
     return numerator / denominator;
 }
 
@@ -210,29 +242,31 @@ static bool should_size_norm_max(const std::string& key) {
 }
 
 static bool should_count_norm(const std::string& key) {
-    static const std::unordered_set<std::string> keys = {"imports_count",
-                                                         "exports_count",
-                                                         "unique_imports",
-                                                         "unique_dlls",
-                                                         "unique_apis",
-                                                         "resources_count",
-                                                         "sections_count",
-                                                         "symbols_count",
-                                                         "imported_system_dlls_count",
-                                                         "packer_keyword_hits_count",
-                                                         "tls_callbacks_count",
-                                                         "reloc_blocks_count",
-                                                         "reloc_entries_count",
-                                                         "upx_section_count",
-                                                         "compressed_section_count",
-                                                         "alignment_mismatch_count",
-                                                         "rwx_sections_count",
-                                                         "non_standard_executable_sections_count",
-                                                         "section_names_count"};
+    static const std::unordered_set<std::string> keys = {
+        "imports_count",
+        "exports_count",
+        "unique_imports",
+        "unique_dlls",
+        "unique_apis",
+        "resources_count",
+        "sections_count",
+        "symbols_count",
+        "imported_system_dlls_count",
+        "packer_keyword_hits_count",
+        "tls_callbacks_count",
+        "reloc_blocks_count",
+        "reloc_entries_count",
+        "upx_section_count",
+        "compressed_section_count",
+        "alignment_mismatch_count",
+        "rwx_sections_count",
+        "non_standard_executable_sections_count",
+        "section_names_count"};
     return keys.find(key) != keys.end();
 }
 
-static std::unordered_map<std::string, float> extract_lightweight_features(const LIEF::PE::Binary& bin) {
+static std::unordered_map<std::string, float> extract_lightweight_features(
+    const LIEF::PE::Binary& bin) {
     std::unordered_map<std::string, float> out;
     std::vector<float> v(LIGHTWEIGHT_FEATURE_DIM, 0.0f);
 
@@ -243,7 +277,9 @@ static std::unordered_map<std::string, float> extract_lightweight_features(const
             std::string dll = lower_ascii(imp.name());
             if (!dll.empty()) dlls.push_back(dll);
             for (const LIEF::PE::ImportEntry& e : imp.entries()) {
-                if (!e.name().empty()) { apis.push_back(e.name()); }
+                if (!e.name().empty()) {
+                    apis.push_back(e.name());
+                }
             }
         }
     }
@@ -269,12 +305,14 @@ static std::unordered_map<std::string, float> extract_lightweight_features(const
 
     l2_normalize(v);
 
-    for (std::size_t i = 0; i < v.size(); ++i) { out[std::string("lw_") + std::to_string(i)] = v[i]; }
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        out[std::string("lw_") + std::to_string(i)] = v[i];
+    }
     return out;
 }
 
-static std::unordered_map<std::string, float> extract_enhanced_pe_features(const std::string& valid_path,
-                                                                           const LIEF::PE::Binary& bin) {
+static std::unordered_map<std::string, float> extract_enhanced_pe_features(
+    const std::string& valid_path, const LIEF::PE::Binary& bin) {
     std::unordered_map<std::string, float> features;
     try {
         std::error_code ec;
@@ -287,7 +325,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         }
         if (ec) file_size = 0;
 
-        features["sections_count"] = static_cast<float>(range_count(bin.sections()));
+        features["sections_count"] =
+            static_cast<float>(range_count(bin.sections()));
         features["symbols_count"] = 0.0f;
 
         std::vector<std::pair<std::string, std::string>> imports;
@@ -297,7 +336,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         std::size_t total_import_functions = 0;
 
         if (bin.has_imports()) {
-            features["imports_count"] = static_cast<float>(range_count(bin.imports()));
+            features["imports_count"] =
+                static_cast<float>(range_count(bin.imports()));
             for (const LIEF::PE::Import& entry : bin.imports()) {
                 std::string dll_name = lower_ascii(entry.name());
                 if (!dll_name.empty()) dll_names.push_back(dll_name);
@@ -319,24 +359,33 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         if (!dll_names.empty() || !api_names.empty()) {
             std::unordered_set<std::string> uniq_imp;
             uniq_imp.reserve(imports.size());
-            for (const auto& p : imports) { uniq_imp.insert(p.first + "|" + p.second); }
-            std::unordered_set<std::string> uniq_dll(dll_names.begin(), dll_names.end());
-            std::unordered_set<std::string> uniq_api(api_names.begin(), api_names.end());
+            for (const auto& p : imports) {
+                uniq_imp.insert(p.first + "|" + p.second);
+            }
+            std::unordered_set<std::string> uniq_dll(dll_names.begin(),
+                                                     dll_names.end());
+            std::unordered_set<std::string> uniq_api(api_names.begin(),
+                                                     api_names.end());
 
             features["unique_imports"] = static_cast<float>(uniq_imp.size());
             features["unique_dlls"] = static_cast<float>(uniq_dll.size());
             features["unique_apis"] = static_cast<float>(uniq_api.size());
 
-            features["import_ordinal_only_count"] = static_cast<float>(import_ordinal_only_count);
-            features["import_ordinal_only_ratio"] = static_cast<float>(static_cast<double>(import_ordinal_only_count) /
-                                                                       static_cast<double>(total_import_functions + 1));
-            features["avg_imports_per_dll"] = static_cast<float>(static_cast<double>(total_import_functions) /
-                                                                 static_cast<double>(uniq_dll.size() + 1));
+            features["import_ordinal_only_count"] =
+                static_cast<float>(import_ordinal_only_count);
+            features["import_ordinal_only_ratio"] = static_cast<float>(
+                static_cast<double>(import_ordinal_only_count) /
+                static_cast<double>(total_import_functions + 1));
+            features["avg_imports_per_dll"] =
+                static_cast<float>(static_cast<double>(total_import_functions) /
+                                   static_cast<double>(uniq_dll.size() + 1));
 
             features["imports_density"] =
-                static_cast<float>(static_cast<double>(imports.size()) / static_cast<double>(file_size + 1));
-            features["imports_name_ratio"] = static_cast<float>(static_cast<double>(api_names.size()) /
-                                                                static_cast<double>(total_import_functions + 1));
+                static_cast<float>(static_cast<double>(imports.size()) /
+                                   static_cast<double>(file_size + 1));
+            features["imports_name_ratio"] = static_cast<float>(
+                static_cast<double>(api_names.size()) /
+                static_cast<double>(total_import_functions + 1));
 
             if (!dll_names.empty()) {
                 std::vector<std::size_t> lens;
@@ -345,11 +394,15 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                     if (!n.empty()) lens.push_back(n.size());
                 }
                 if (!lens.empty()) {
-                    double avg = std::accumulate(lens.begin(), lens.end(), 0.0) / static_cast<double>(lens.size());
+                    double avg =
+                        std::accumulate(lens.begin(), lens.end(), 0.0) /
+                        static_cast<double>(lens.size());
                     auto mm = std::minmax_element(lens.begin(), lens.end());
                     features["dll_name_avg_length"] = static_cast<float>(avg);
-                    features["dll_name_max_length"] = static_cast<float>(*mm.second);
-                    features["dll_name_min_length"] = static_cast<float>(*mm.first);
+                    features["dll_name_max_length"] =
+                        static_cast<float>(*mm.second);
+                    features["dll_name_min_length"] =
+                        static_cast<float>(*mm.first);
                 }
             }
 
@@ -363,17 +416,22 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                     if (base == s) imported_system.insert(base);
                 }
             }
-            features["imported_system_dlls_count"] = static_cast<float>(imported_system.size());
-            features["imported_system_dlls_ratio"] = static_cast<float>(static_cast<double>(imported_system.size()) /
-                                                                        static_cast<double>(dll_names.size() + 1));
+            features["imported_system_dlls_count"] =
+                static_cast<float>(imported_system.size());
+            features["imported_system_dlls_ratio"] =
+                static_cast<float>(static_cast<double>(imported_system.size()) /
+                                   static_cast<double>(dll_names.size() + 1));
 
-            auto entropy_from_counts = [](const std::unordered_map<std::string, int>& counts) -> float {
+            auto entropy_from_counts =
+                [](const std::unordered_map<std::string, int>& counts)
+                -> float {
                 int total = 0;
                 for (const auto& kv : counts) total += kv.second;
                 if (total <= 0) return 0.0f;
                 double s = 0.0;
                 for (const auto& kv : counts) {
-                    double p = static_cast<double>(kv.second) / static_cast<double>(total);
+                    double p = static_cast<double>(kv.second) /
+                               static_cast<double>(total);
                     if (p > 0.0) s += p * std::log2(p);
                 }
                 return static_cast<float>(-s / 8.0);
@@ -389,10 +447,12 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
             int syscall_count = 0;
             for (const auto& a : api_names) {
                 std::string al = lower_ascii(a);
-                if (al.rfind("nt", 0) == 0 || al.rfind("zw", 0) == 0) syscall_count++;
+                if (al.rfind("nt", 0) == 0 || al.rfind("zw", 0) == 0)
+                    syscall_count++;
             }
             features["syscall_api_ratio"] =
-                static_cast<float>(static_cast<double>(syscall_count) / static_cast<double>(api_names.size() + 1));
+                static_cast<float>(static_cast<double>(syscall_count) /
+                                   static_cast<double>(api_names.size() + 1));
 
             int network_calls = 0;
             int process_calls = 0;
@@ -401,18 +461,28 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
             for (const auto& p : imports) {
                 std::string dll = lower_ascii(p.first);
                 std::string api = lower_ascii(p.second);
-                if (contains_any(dll, NETWORK_API_KEYWORDS) || contains_any(api, NETWORK_API_KEYWORDS)) network_calls++;
-                if (contains_any(dll, PROCESS_API_KEYWORDS) || contains_any(api, PROCESS_API_KEYWORDS)) process_calls++;
-                if (contains_any(dll, FILESYSTEM_API_KEYWORDS) || contains_any(api, FILESYSTEM_API_KEYWORDS))
+                if (contains_any(dll, NETWORK_API_KEYWORDS) ||
+                    contains_any(api, NETWORK_API_KEYWORDS))
+                    network_calls++;
+                if (contains_any(dll, PROCESS_API_KEYWORDS) ||
+                    contains_any(api, PROCESS_API_KEYWORDS))
+                    process_calls++;
+                if (contains_any(dll, FILESYSTEM_API_KEYWORDS) ||
+                    contains_any(api, FILESYSTEM_API_KEYWORDS))
                     filesystem_calls++;
-                if (contains_any(dll, REGISTRY_API_KEYWORDS) || contains_any(api, REGISTRY_API_KEYWORDS))
+                if (contains_any(dll, REGISTRY_API_KEYWORDS) ||
+                    contains_any(api, REGISTRY_API_KEYWORDS))
                     registry_calls++;
             }
             double denom = static_cast<double>(total_import_functions + 1);
-            features["api_network_ratio"] = static_cast<float>(static_cast<double>(network_calls) / denom);
-            features["api_process_ratio"] = static_cast<float>(static_cast<double>(process_calls) / denom);
-            features["api_filesystem_ratio"] = static_cast<float>(static_cast<double>(filesystem_calls) / denom);
-            features["api_registry_ratio"] = static_cast<float>(static_cast<double>(registry_calls) / denom);
+            features["api_network_ratio"] =
+                static_cast<float>(static_cast<double>(network_calls) / denom);
+            features["api_process_ratio"] =
+                static_cast<float>(static_cast<double>(process_calls) / denom);
+            features["api_filesystem_ratio"] = static_cast<float>(
+                static_cast<double>(filesystem_calls) / denom);
+            features["api_registry_ratio"] =
+                static_cast<float>(static_cast<double>(registry_calls) / denom);
         } else {
             features["unique_imports"] = 0.0f;
             features["unique_dlls"] = 0.0f;
@@ -446,7 +516,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                 features["exports_density"] = 0.0f;
                 features["exports_name_ratio"] = 0.0f;
             } else {
-                features["exports_count"] = static_cast<float>(ex->entries().size());
+                features["exports_count"] =
+                    static_cast<float>(ex->entries().size());
                 std::vector<std::size_t> name_lens;
                 std::size_t name_count = 0;
                 for (const auto& e : ex->entries()) {
@@ -456,16 +527,23 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                     }
                 }
                 if (!name_lens.empty()) {
-                    double avg = std::accumulate(name_lens.begin(), name_lens.end(), 0.0) /
+                    double avg = std::accumulate(name_lens.begin(),
+                                                 name_lens.end(), 0.0) /
                                  static_cast<double>(name_lens.size());
-                    auto mm = std::minmax_element(name_lens.begin(), name_lens.end());
-                    features["export_name_avg_length"] = static_cast<float>(avg);
-                    features["export_name_max_length"] = static_cast<float>(*mm.second);
-                    features["export_name_min_length"] = static_cast<float>(*mm.first);
+                    auto mm =
+                        std::minmax_element(name_lens.begin(), name_lens.end());
+                    features["export_name_avg_length"] =
+                        static_cast<float>(avg);
+                    features["export_name_max_length"] =
+                        static_cast<float>(*mm.second);
+                    features["export_name_min_length"] =
+                        static_cast<float>(*mm.first);
                     features["exports_density"] =
-                        static_cast<float>(static_cast<double>(name_count) / static_cast<double>(file_size + 1));
-                    features["exports_name_ratio"] = static_cast<float>(static_cast<double>(name_count) /
-                                                                        static_cast<double>(ex->entries().size() + 1));
+                        static_cast<float>(static_cast<double>(name_count) /
+                                           static_cast<double>(file_size + 1));
+                    features["exports_name_ratio"] = static_cast<float>(
+                        static_cast<double>(name_count) /
+                        static_cast<double>(ex->entries().size() + 1));
                 } else {
                     features["export_name_avg_length"] = 0.0f;
                     features["export_name_max_length"] = 0.0f;
@@ -517,7 +595,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         std::size_t executable_writable_sections = 0;
         std::size_t alignment_mismatch_count = 0;
 
-        std::unordered_set<std::string> common_exec = {".text", "text", ".code"};
+        std::unordered_set<std::string> common_exec = {".text", "text",
+                                                       ".code"};
         std::uint32_t file_align = bin.optional_header().file_alignment();
         std::uint32_t sect_align = bin.optional_header().section_alignment();
 
@@ -543,10 +622,12 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
             if (is_writable) writable_sections_count++;
             if (is_readable) readable_sections_count++;
             if (is_executable && is_writable) executable_writable_sections++;
-            if (is_executable && is_writable && is_readable) rwx_sections_count++;
+            if (is_executable && is_writable && is_readable)
+                rwx_sections_count++;
 
             std::string lower_name = lower_ascii(name);
-            if (is_executable && common_exec.find(lower_name) == common_exec.end()) {
+            if (is_executable &&
+                common_exec.find(lower_name) == common_exec.end()) {
                 non_standard_executable_sections_count++;
             }
 
@@ -558,8 +639,10 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                 data_section_vsize += section.virtual_size();
             }
 
-            if (file_align != 0 && section.sizeof_raw_data() % file_align != 0) alignment_mismatch_count++;
-            if (sect_align != 0 && section.virtual_size() % sect_align != 0) alignment_mismatch_count++;
+            if (file_align != 0 && section.sizeof_raw_data() % file_align != 0)
+                alignment_mismatch_count++;
+            if (sect_align != 0 && section.virtual_size() % sect_align != 0)
+                alignment_mismatch_count++;
 
             if (!name.empty()) {
                 name_len_count++;
@@ -572,41 +655,54 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
 
             total_chars += static_cast<double>(name.size());
             for (unsigned char c : name) {
-                if (!std::isalnum(c) && c != '_' && c != '.') { special_chars += 1.0; }
+                if (!std::isalnum(c) && c != '_' && c != '.') {
+                    special_chars += 1.0;
+                }
             }
 
             if (!lower_name.empty()) {
-                if (lower_name.find("upx") != std::string::npos) upx_section_count++;
-                if (lower_name.find("comp") != std::string::npos || lower_name.find("zip") != std::string::npos ||
+                if (lower_name.find("upx") != std::string::npos)
+                    upx_section_count++;
+                if (lower_name.find("comp") != std::string::npos ||
+                    lower_name.find("zip") != std::string::npos ||
                     lower_name.find("lz") != std::string::npos)
                     compressed_section_count++;
-                if (lower_name.find("mpress") != std::string::npos) has_mpress_section = true;
-                if (lower_name.find("aspack") != std::string::npos) has_aspack_section = true;
-                if (lower_name.find("themida") != std::string::npos) has_themida_section = true;
-                for (std::size_t i = 0; i < PACKER_SECTION_KEYWORDS.size(); ++i) {
+                if (lower_name.find("mpress") != std::string::npos)
+                    has_mpress_section = true;
+                if (lower_name.find("aspack") != std::string::npos)
+                    has_aspack_section = true;
+                if (lower_name.find("themida") != std::string::npos)
+                    has_themida_section = true;
+                for (std::size_t i = 0; i < PACKER_SECTION_KEYWORDS.size();
+                     ++i) {
                     const char* kw = PACKER_SECTION_KEYWORDS[i];
-                    if (kw && lower_name.find(kw) != std::string::npos) packer_present[i] = true;
+                    if (kw && lower_name.find(kw) != std::string::npos)
+                        packer_present[i] = true;
                 }
                 for (std::size_t i = 0; i < COMMON_SECTIONS.size(); ++i) {
-                    if (lower_name == COMMON_SECTIONS[i]) common_section_present[i] = true;
+                    if (lower_name == COMMON_SECTIONS[i])
+                        common_section_present[i] = true;
                 }
             }
 
-            std::size_t end = static_cast<std::size_t>(section.pointerto_raw_data()) +
-                              static_cast<std::size_t>(section.sizeof_raw_data());
+            std::size_t end =
+                static_cast<std::size_t>(section.pointerto_raw_data()) +
+                static_cast<std::size_t>(section.sizeof_raw_data());
             if (end > max_end) max_end = end;
         }
 
         features["section_names_count"] = static_cast<float>(section_count);
-        features["section_total_size"] =
-            static_cast<float>(std::accumulate(section_sizes.begin(), section_sizes.end(), 0ULL));
-        features["section_total_vsize"] =
-            static_cast<float>(std::accumulate(section_vsizes.begin(), section_vsizes.end(), 0ULL));
+        features["section_total_size"] = static_cast<float>(
+            std::accumulate(section_sizes.begin(), section_sizes.end(), 0ULL));
+        features["section_total_vsize"] = static_cast<float>(std::accumulate(
+            section_vsizes.begin(), section_vsizes.end(), 0ULL));
 
         if (!section_sizes.empty()) {
-            double avg = std::accumulate(section_sizes.begin(), section_sizes.end(), 0.0) /
+            double avg = std::accumulate(section_sizes.begin(),
+                                         section_sizes.end(), 0.0) /
                          static_cast<double>(section_sizes.size());
-            auto mm = std::minmax_element(section_sizes.begin(), section_sizes.end());
+            auto mm =
+                std::minmax_element(section_sizes.begin(), section_sizes.end());
             features["avg_section_size"] = static_cast<float>(avg);
             features["max_section_size"] = static_cast<float>(*mm.second);
             features["min_section_size"] = static_cast<float>(*mm.first);
@@ -616,9 +712,11 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                 double d = static_cast<double>(s) - avg;
                 var += d * d;
             }
-            double sd = std::sqrt(var / static_cast<double>(section_sizes.size()));
+            double sd =
+                std::sqrt(var / static_cast<double>(section_sizes.size()));
             features["section_size_std"] = static_cast<float>(sd);
-            features["section_size_cv"] = static_cast<float>(avg != 0.0 ? (sd / avg) : 0.0);
+            features["section_size_cv"] =
+                static_cast<float>(avg != 0.0 ? (sd / avg) : 0.0);
         } else {
             features["avg_section_size"] = 0.0f;
             features["max_section_size"] = 0.0f;
@@ -628,9 +726,11 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         }
 
         if (!section_vsizes.empty()) {
-            double avg = std::accumulate(section_vsizes.begin(), section_vsizes.end(), 0.0) /
+            double avg = std::accumulate(section_vsizes.begin(),
+                                         section_vsizes.end(), 0.0) /
                          static_cast<double>(section_vsizes.size());
-            auto mm = std::minmax_element(section_vsizes.begin(), section_vsizes.end());
+            auto mm = std::minmax_element(section_vsizes.begin(),
+                                          section_vsizes.end());
             features["avg_section_vsize"] = static_cast<float>(avg);
             features["max_section_vsize"] = static_cast<float>(*mm.second);
             features["min_section_vsize"] = static_cast<float>(*mm.first);
@@ -639,9 +739,11 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                 double d = static_cast<double>(s) - avg;
                 var += d * d;
             }
-            double sd = std::sqrt(var / static_cast<double>(section_vsizes.size()));
+            double sd =
+                std::sqrt(var / static_cast<double>(section_vsizes.size()));
             features["section_vsize_std"] = static_cast<float>(sd);
-            features["section_vsize_cv"] = static_cast<float>(avg != 0.0 ? (sd / avg) : 0.0);
+            features["section_vsize_cv"] =
+                static_cast<float>(avg != 0.0 ? (sd / avg) : 0.0);
         } else {
             features["avg_section_vsize"] = 0.0f;
             features["max_section_vsize"] = 0.0f;
@@ -651,15 +753,18 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         }
 
         if (!section_entropies.empty()) {
-            double avg = std::accumulate(section_entropies.begin(), section_entropies.end(), 0.0) /
+            double avg = std::accumulate(section_entropies.begin(),
+                                         section_entropies.end(), 0.0) /
                          static_cast<double>(section_entropies.size());
-            auto mm = std::minmax_element(section_entropies.begin(), section_entropies.end());
+            auto mm = std::minmax_element(section_entropies.begin(),
+                                          section_entropies.end());
             double var = 0.0;
             for (double e : section_entropies) {
                 double d = e - avg;
                 var += d * d;
             }
-            double sd = std::sqrt(var / static_cast<double>(section_entropies.size()));
+            double sd =
+                std::sqrt(var / static_cast<double>(section_entropies.size()));
             features["avg_section_entropy"] = static_cast<float>(avg);
             features["max_section_entropy"] = static_cast<float>(*mm.second);
             features["min_section_entropy"] = static_cast<float>(*mm.first);
@@ -668,8 +773,9 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
             features["section_entropy_min"] = features["min_section_entropy"];
             features["section_entropy_max"] = features["max_section_entropy"];
             features["packed_sections_ratio"] = static_cast<float>(
-                static_cast<double>(std::count_if(section_entropies.begin(), section_entropies.end(),
-                                                  [](double e) { return e > ENTROPY_HIGH_THRESHOLD; })) /
+                static_cast<double>(std::count_if(
+                    section_entropies.begin(), section_entropies.end(),
+                    [](double e) { return e > ENTROPY_HIGH_THRESHOLD; })) /
                 static_cast<double>(section_entropies.size()));
         } else {
             features["avg_section_entropy"] = 0.0f;
@@ -684,48 +790,68 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
 
         features["code_section_ratio"] = static_cast<float>(
             static_cast<double>(code_section_size) /
-            static_cast<double>(std::accumulate(section_sizes.begin(), section_sizes.end(), 0ULL) + 1));
+            static_cast<double>(std::accumulate(section_sizes.begin(),
+                                                section_sizes.end(), 0ULL) +
+                                1));
         features["data_section_ratio"] = static_cast<float>(
             static_cast<double>(data_section_size) /
-            static_cast<double>(std::accumulate(section_sizes.begin(), section_sizes.end(), 0ULL) + 1));
+            static_cast<double>(std::accumulate(section_sizes.begin(),
+                                                section_sizes.end(), 0ULL) +
+                                1));
         features["code_vsize_ratio"] = static_cast<float>(
             static_cast<double>(code_section_vsize) /
-            static_cast<double>(std::accumulate(section_vsizes.begin(), section_vsizes.end(), 0ULL) + 1));
+            static_cast<double>(std::accumulate(section_vsizes.begin(),
+                                                section_vsizes.end(), 0ULL) +
+                                1));
         features["data_vsize_ratio"] = static_cast<float>(
             static_cast<double>(data_section_vsize) /
-            static_cast<double>(std::accumulate(section_vsizes.begin(), section_vsizes.end(), 0ULL) + 1));
+            static_cast<double>(std::accumulate(section_vsizes.begin(),
+                                                section_vsizes.end(), 0ULL) +
+                                1));
 
-        features["executable_sections_count"] = static_cast<float>(executable_sections_count);
-        features["writable_sections_count"] = static_cast<float>(writable_sections_count);
-        features["readable_sections_count"] = static_cast<float>(readable_sections_count);
+        features["executable_sections_count"] =
+            static_cast<float>(executable_sections_count);
+        features["writable_sections_count"] =
+            static_cast<float>(writable_sections_count);
+        features["readable_sections_count"] =
+            static_cast<float>(readable_sections_count);
         features["rwx_sections_count"] = static_cast<float>(rwx_sections_count);
-        features["non_standard_executable_sections_count"] = static_cast<float>(non_standard_executable_sections_count);
-        features["executable_writable_sections"] = static_cast<float>(executable_writable_sections);
+        features["non_standard_executable_sections_count"] =
+            static_cast<float>(non_standard_executable_sections_count);
+        features["executable_writable_sections"] =
+            static_cast<float>(executable_writable_sections);
 
         double sec_denom = static_cast<double>(section_count + 1);
-        features["executable_sections_ratio"] =
-            static_cast<float>(static_cast<double>(executable_sections_count) / sec_denom);
-        features["writable_sections_ratio"] =
-            static_cast<float>(static_cast<double>(writable_sections_count) / sec_denom);
-        features["readable_sections_ratio"] =
-            static_cast<float>(static_cast<double>(readable_sections_count) / sec_denom);
-        features["rwx_sections_ratio"] = static_cast<float>(static_cast<double>(rwx_sections_count) / sec_denom);
-        features["non_standard_executable_sections_ratio"] =
-            static_cast<float>(static_cast<double>(non_standard_executable_sections_count) / sec_denom);
-        features["executable_writable_ratio"] =
-            static_cast<float>(static_cast<double>(executable_writable_sections) / sec_denom);
+        features["executable_sections_ratio"] = static_cast<float>(
+            static_cast<double>(executable_sections_count) / sec_denom);
+        features["writable_sections_ratio"] = static_cast<float>(
+            static_cast<double>(writable_sections_count) / sec_denom);
+        features["readable_sections_ratio"] = static_cast<float>(
+            static_cast<double>(readable_sections_count) / sec_denom);
+        features["rwx_sections_ratio"] = static_cast<float>(
+            static_cast<double>(rwx_sections_count) / sec_denom);
+        features["non_standard_executable_sections_ratio"] = static_cast<float>(
+            static_cast<double>(non_standard_executable_sections_count) /
+            sec_denom);
+        features["executable_writable_ratio"] = static_cast<float>(
+            static_cast<double>(executable_writable_sections) / sec_denom);
         features["executable_code_density"] =
-            static_cast<float>(static_cast<double>(code_section_size) / static_cast<double>(file_size + 1));
+            static_cast<float>(static_cast<double>(code_section_size) /
+                               static_cast<double>(file_size + 1));
 
-        features["alignment_mismatch_count"] = static_cast<float>(alignment_mismatch_count);
+        features["alignment_mismatch_count"] =
+            static_cast<float>(alignment_mismatch_count);
         features["alignment_mismatch_ratio"] =
-            static_cast<float>(static_cast<double>(alignment_mismatch_count) / static_cast<double>(section_count + 1));
+            static_cast<float>(static_cast<double>(alignment_mismatch_count) /
+                               static_cast<double>(section_count + 1));
 
         if (name_len_count > 0) {
             double avg = name_len_sum / static_cast<double>(name_len_count);
             features["section_name_avg_length"] = static_cast<float>(avg);
-            features["section_name_max_length"] = static_cast<float>(name_len_max);
-            features["section_name_min_length"] = static_cast<float>(name_len_min);
+            features["section_name_max_length"] =
+                static_cast<float>(name_len_max);
+            features["section_name_min_length"] =
+                static_cast<float>(name_len_min);
         } else {
             features["section_name_avg_length"] = 0.0f;
             features["section_name_max_length"] = 0.0f;
@@ -736,7 +862,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         features["has_mpress_section"] = has_mpress_section ? 1.0f : 0.0f;
         features["has_aspack_section"] = has_aspack_section ? 1.0f : 0.0f;
         features["has_themida_section"] = has_themida_section ? 1.0f : 0.0f;
-        features["special_char_ratio"] = static_cast<float>(special_chars / (total_chars + 1.0));
+        features["special_char_ratio"] =
+            static_cast<float>(special_chars / (total_chars + 1.0));
 
         std::size_t packer_hits = 0;
         for (bool present : packer_present) {
@@ -744,33 +871,45 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         }
         features["packer_keyword_hits_count"] = static_cast<float>(packer_hits);
         features["packer_keyword_hits_ratio"] =
-            static_cast<float>(static_cast<double>(packer_hits) / static_cast<double>(section_count + 1));
+            static_cast<float>(static_cast<double>(packer_hits) /
+                               static_cast<double>(section_count + 1));
 
         features["unique_sections_count"] = static_cast<float>(uniq_sec.size());
         features["unique_sections_ratio"] =
-            static_cast<float>(static_cast<double>(uniq_sec.size()) / static_cast<double>(section_count + 1));
+            static_cast<float>(static_cast<double>(uniq_sec.size()) /
+                               static_cast<double>(section_count + 1));
 
-        features["long_sections_count"] = static_cast<float>(long_sections_count);
-        features["short_sections_count"] = static_cast<float>(short_sections_count);
+        features["long_sections_count"] =
+            static_cast<float>(long_sections_count);
+        features["short_sections_count"] =
+            static_cast<float>(short_sections_count);
         features["long_sections_ratio"] =
-            static_cast<float>(static_cast<double>(long_sections_count) / static_cast<double>(section_count + 1));
+            static_cast<float>(static_cast<double>(long_sections_count) /
+                               static_cast<double>(section_count + 1));
         features["short_sections_ratio"] =
-            static_cast<float>(static_cast<double>(short_sections_count) / static_cast<double>(section_count + 1));
+            static_cast<float>(static_cast<double>(short_sections_count) /
+                               static_cast<double>(section_count + 1));
         std::size_t trailing_data_size = 0;
-        if (file_size > max_end) trailing_data_size = static_cast<std::size_t>(file_size - max_end);
+        if (file_size > max_end)
+            trailing_data_size = static_cast<std::size_t>(file_size - max_end);
         features["trailing_data_size"] = static_cast<float>(trailing_data_size);
         features["trailing_data_ratio"] =
-            static_cast<float>(static_cast<double>(trailing_data_size) / static_cast<double>(file_size + 1));
-        features["has_large_trailing_data"] = trailing_data_size > LARGE_OVERLAY_THRESHOLD ? 1.0f : 0.0f;
+            static_cast<float>(static_cast<double>(trailing_data_size) /
+                               static_cast<double>(file_size + 1));
+        features["has_large_trailing_data"] =
+            trailing_data_size > LARGE_OVERLAY_THRESHOLD ? 1.0f : 0.0f;
 
         std::vector<std::uint8_t> overlay;
         if (trailing_data_size >= OVERLAY_ENTROPY_MIN_SIZE) {
-            read_file_bytes_seek(valid_path, max_end, trailing_data_size, overlay);
+            read_file_bytes_seek(valid_path, max_end, trailing_data_size,
+                                 overlay);
         }
         double overlay_entropy = entropy_bytes(overlay);
         features["overlay_entropy"] = static_cast<float>(overlay_entropy);
-        features["overlay_high_entropy_flag"] = overlay_entropy > ENTROPY_HIGH_THRESHOLD ? 1.0f : 0.0f;
-        features["has_high_entropy_overlay"] = features["overlay_high_entropy_flag"];
+        features["overlay_high_entropy_flag"] =
+            overlay_entropy > ENTROPY_HIGH_THRESHOLD ? 1.0f : 0.0f;
+        features["has_high_entropy_overlay"] =
+            features["overlay_high_entropy_flag"];
 
         features["resources_count"] = 0.0f;
         features["resource_types_count"] = 0.0f;
@@ -780,7 +919,8 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
             if (rm_res) {
                 auto& rm = rm_res.value();
                 auto types = rm.get_types();
-                features["resource_types_count"] = static_cast<float>(types.size());
+                features["resource_types_count"] =
+                    static_cast<float>(types.size());
                 features["resources_count"] = static_cast<float>(types.size());
             }
         }
@@ -807,15 +947,20 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
             }
         }
         features["relocation_blocks_count"] = static_cast<float>(reloc_blocks);
-        features["relocation_entries_count"] = static_cast<float>(reloc_entries);
+        features["relocation_entries_count"] =
+            static_cast<float>(reloc_entries);
         features["reloc_blocks_count"] = static_cast<float>(reloc_blocks);
         features["reloc_entries_count"] = static_cast<float>(reloc_entries);
 
-        std::size_t ptr_size = (bin.optional_header().magic() == LIEF::PE::PE_TYPE::PE32) ? 4 : 8;
+        std::size_t ptr_size =
+            (bin.optional_header().magic() == LIEF::PE::PE_TYPE::PE32) ? 4 : 8;
         features["import_address_table_size"] =
-            bin.has_imports() ? static_cast<float>(total_import_functions * ptr_size) : 0.0f;
+            bin.has_imports()
+                ? static_cast<float>(total_import_functions * ptr_size)
+                : 0.0f;
 
-        features["subsystem"] = static_cast<float>(bin.optional_header().subsystem());
+        features["subsystem"] =
+            static_cast<float>(bin.optional_header().subsystem());
         std::uint32_t dll_chars = bin.optional_header().dll_characteristics();
         features["dll_characteristics"] = static_cast<float>(dll_chars);
         features["has_nx_compat"] = (dll_chars & 0x0100u) ? 1.0f : 0.0f;
@@ -824,31 +969,44 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         features["has_guard_cf"] = (dll_chars & 0x4000u) ? 1.0f : 0.0f;
 
         features["entry_point_ratio"] = static_cast<float>(
-            static_cast<double>(bin.optional_header().addressof_entrypoint()) / static_cast<double>(file_size + 1));
-        features["image_base"] = static_cast<float>(bin.optional_header().imagebase() > 0 ? 1.0 : 0.0);
-        features["image_base_mod_64k"] =
-            static_cast<float>(static_cast<double>(bin.optional_header().imagebase() % 65536u) / 65536.0);
-        features["checksum"] = static_cast<float>(bin.optional_header().checksum());
-        features["checksum_zero_flag"] = (bin.optional_header().checksum() == 0) ? 1.0f : 0.0f;
-        features["pe_header_size"] = static_cast<float>(bin.optional_header().sizeof_headers());
-        features["header_size_ratio"] = static_cast<float>(static_cast<double>(bin.optional_header().sizeof_headers()) /
-                                                           static_cast<double>(file_size + 1));
+            static_cast<double>(bin.optional_header().addressof_entrypoint()) /
+            static_cast<double>(file_size + 1));
+        features["image_base"] = static_cast<float>(
+            bin.optional_header().imagebase() > 0 ? 1.0 : 0.0);
+        features["image_base_mod_64k"] = static_cast<float>(
+            static_cast<double>(bin.optional_header().imagebase() % 65536u) /
+            65536.0);
+        features["checksum"] =
+            static_cast<float>(bin.optional_header().checksum());
+        features["checksum_zero_flag"] =
+            (bin.optional_header().checksum() == 0) ? 1.0f : 0.0f;
+        features["pe_header_size"] =
+            static_cast<float>(bin.optional_header().sizeof_headers());
+        features["header_size_ratio"] = static_cast<float>(
+            static_cast<double>(bin.optional_header().sizeof_headers()) /
+            static_cast<double>(file_size + 1));
 
         std::string entry_section_name;
         auto entry_rva = bin.optional_header().addressof_entrypoint();
         for (const auto& s : bin.sections()) {
             if (entry_rva >= s.virtual_address() &&
-                entry_rva < s.virtual_address() + std::max<std::uint32_t>(s.virtual_size(), s.sizeof_raw_data())) {
+                entry_rva < s.virtual_address() +
+                                std::max<std::uint32_t>(s.virtual_size(),
+                                                        s.sizeof_raw_data())) {
                 entry_section_name = lower_ascii(s.name());
                 break;
             }
         }
-        std::unordered_set<std::string> common_exec_names = {".text", "text", ".code"};
+        std::unordered_set<std::string> common_exec_names = {".text", "text",
+                                                             ".code"};
         features["entry_in_nonstandard_section"] =
-            (!entry_section_name.empty() && common_exec_names.find(entry_section_name) == common_exec_names.end())
+            (!entry_section_name.empty() &&
+             common_exec_names.find(entry_section_name) ==
+                 common_exec_names.end())
                 ? 1.0f
                 : 0.0f;
-        features["entry_in_nonstandard_section_flag"] = features["entry_in_nonstandard_section"];
+        features["entry_in_nonstandard_section_flag"] =
+            features["entry_in_nonstandard_section"];
 
         features["has_signature"] = bin.has_signatures() ? 1.0f : 0.0f;
         features["signature_size"] = 0.0f;
@@ -860,10 +1018,14 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                 auto der = it->raw_der();
                 features["signature_size"] = static_cast<float>(der.size());
                 if (!der.empty()) {
-                    std::string blob(reinterpret_cast<const char*>(der.data()), der.size());
-                    bool has_st = (blob.find("signingTime") != std::string::npos) ||
-                                  (blob.find("1.2.840.113549.1.9.5") != std::string::npos);
-                    features["signature_has_signing_time"] = has_st ? 1.0f : 0.0f;
+                    std::string blob(reinterpret_cast<const char*>(der.data()),
+                                     der.size());
+                    bool has_st =
+                        (blob.find("signingTime") != std::string::npos) ||
+                        (blob.find("1.2.840.113549.1.9.5") !=
+                         std::string::npos);
+                    features["signature_has_signing_time"] =
+                        has_st ? 1.0f : 0.0f;
                 }
             }
         }
@@ -885,16 +1047,22 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
                         if (!sfi) continue;
                         for (const auto& table : sfi->children()) {
                             for (const auto& entry : table.entries()) {
-                                std::string key = lower_ascii(LIEF::u16tou8(entry.key, true));
-                                std::string val = LIEF::u16tou8(entry.value, true);
+                                std::string key =
+                                    lower_ascii(LIEF::u16tou8(entry.key, true));
+                                std::string val =
+                                    LIEF::u16tou8(entry.value, true);
                                 if (key == "companyname") {
-                                    company_name_len = std::max(company_name_len, val.size());
+                                    company_name_len =
+                                        std::max(company_name_len, val.size());
                                 } else if (key == "productname") {
-                                    product_name_len = std::max(product_name_len, val.size());
+                                    product_name_len =
+                                        std::max(product_name_len, val.size());
                                 } else if (key == "fileversion") {
-                                    file_version_len = std::max(file_version_len, val.size());
+                                    file_version_len =
+                                        std::max(file_version_len, val.size());
                                 } else if (key == "originalfilename") {
-                                    original_filename_len = std::max(original_filename_len, val.size());
+                                    original_filename_len = std::max(
+                                        original_filename_len, val.size());
                                 }
                             }
                         }
@@ -906,12 +1074,15 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         features["company_name_len"] = static_cast<float>(company_name_len);
         features["product_name_len"] = static_cast<float>(product_name_len);
         features["file_version_len"] = static_cast<float>(file_version_len);
-        features["original_filename_len"] = static_cast<float>(original_filename_len);
+        features["original_filename_len"] =
+            static_cast<float>(original_filename_len);
 
         features["has_upx_section"] = upx_section_count > 0 ? 1.0f : 0.0f;
         features["upx_section_count"] = static_cast<float>(upx_section_count);
-        features["has_compressed_section"] = compressed_section_count > 0 ? 1.0f : 0.0f;
-        features["compressed_section_count"] = static_cast<float>(compressed_section_count);
+        features["has_compressed_section"] =
+            compressed_section_count > 0 ? 1.0f : 0.0f;
+        features["compressed_section_count"] =
+            static_cast<float>(compressed_section_count);
 
         std::uint32_t timestamp = bin.header().time_date_stamp();
         features["timestamp"] = static_cast<float>(timestamp);
@@ -931,249 +1102,311 @@ static std::unordered_map<std::string, float> extract_enhanced_pe_features(const
         }
         float sections_count_f = get_or_zero(features, "sections_count");
         float imports_count_f = get_or_zero(features, "imports_count");
-        float packed_sections_ratio_f = get_or_zero(features, "packed_sections_ratio");
-        float high_entropy_ratio_f = get_or_zero(features, "high_entropy_ratio");
-        float rwx_sections_ratio_f = get_or_zero(features, "rwx_sections_ratio");
-        float non_standard_exec_count_f = get_or_zero(features, "non_standard_executable_sections_count");
-        float alignment_mismatch_ratio_f = get_or_zero(features, "alignment_mismatch_ratio");
+        float packed_sections_ratio_f =
+            get_or_zero(features, "packed_sections_ratio");
+        float high_entropy_ratio_f =
+            get_or_zero(features, "high_entropy_ratio");
+        float rwx_sections_ratio_f =
+            get_or_zero(features, "rwx_sections_ratio");
+        float non_standard_exec_count_f =
+            get_or_zero(features, "non_standard_executable_sections_count");
+        float alignment_mismatch_ratio_f =
+            get_or_zero(features, "alignment_mismatch_ratio");
         float network_ratio_f = get_or_zero(features, "api_network_ratio");
         float process_ratio_f = get_or_zero(features, "api_process_ratio");
         float fs_ratio_f = get_or_zero(features, "api_filesystem_ratio");
         float reg_ratio_f = get_or_zero(features, "api_registry_ratio");
-        features["imports_per_section"] = safe_ratio(imports_count_f, sections_count_f + 1.0f);
-        features["entropy_packed_interaction"] = clamp01(packed_sections_ratio_f * high_entropy_ratio_f);
-        features["suspicious_section_score"] =
-            clamp01(rwx_sections_ratio_f + safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f) +
-                    alignment_mismatch_ratio_f);
-        features["api_behavior_mix_score"] = clamp01(network_ratio_f + process_ratio_f + fs_ratio_f + reg_ratio_f);
+        features["imports_per_section"] =
+            safe_ratio(imports_count_f, sections_count_f + 1.0f);
+        features["entropy_packed_interaction"] =
+            clamp01(packed_sections_ratio_f * high_entropy_ratio_f);
+        features["suspicious_section_score"] = clamp01(
+            rwx_sections_ratio_f +
+            safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f) +
+            alignment_mismatch_ratio_f);
+        features["api_behavior_mix_score"] = clamp01(
+            network_ratio_f + process_ratio_f + fs_ratio_f + reg_ratio_f);
         features["overlay_entropy_weighted"] =
-            clamp01(get_or_zero(features, "overlay_entropy") * get_or_zero(features, "trailing_data_ratio"));
-        float executable_writable_ratio_f = get_or_zero(features, "executable_writable_ratio");
-        float max_section_entropy_f = get_or_zero(features, "max_section_entropy");
-        float checksum_zero_flag_f = get_or_zero(features, "checksum_zero_flag");
-        float entry_nonstandard_f = get_or_zero(features, "entry_in_nonstandard_section_flag");
+            clamp01(get_or_zero(features, "overlay_entropy") *
+                    get_or_zero(features, "trailing_data_ratio"));
+        float executable_writable_ratio_f =
+            get_or_zero(features, "executable_writable_ratio");
+        float max_section_entropy_f =
+            get_or_zero(features, "max_section_entropy");
+        float checksum_zero_flag_f =
+            get_or_zero(features, "checksum_zero_flag");
+        float entry_nonstandard_f =
+            get_or_zero(features, "entry_in_nonstandard_section_flag");
         float syscall_ratio_f = get_or_zero(features, "syscall_api_ratio");
-        float ordinal_ratio_f = get_or_zero(features, "import_ordinal_only_ratio");
-        float imported_system_ratio_f = get_or_zero(features, "imported_system_dlls_ratio");
+        float ordinal_ratio_f =
+            get_or_zero(features, "import_ordinal_only_ratio");
+        float imported_system_ratio_f =
+            get_or_zero(features, "imported_system_dlls_ratio");
         float has_nx_f = get_or_zero(features, "has_nx_compat");
         float has_aslr_f = get_or_zero(features, "has_aslr");
         float has_seh_f = get_or_zero(features, "has_seh");
         float has_guard_cf_f = get_or_zero(features, "has_guard_cf");
         float code_ratio_f = get_or_zero(features, "code_section_ratio");
         float data_ratio_f = get_or_zero(features, "data_section_ratio");
-        float nonstandard_exec_ratio_f = get_or_zero(features, "non_standard_executable_sections_ratio");
+        float nonstandard_exec_ratio_f =
+            get_or_zero(features, "non_standard_executable_sections_ratio");
         float has_signature_f = get_or_zero(features, "has_signature");
         float version_info_f = get_or_zero(features, "version_info_present");
         float has_debug_info_f = get_or_zero(features, "has_debug_info");
         features["import_execution_pressure"] =
-            clamp01(get_or_zero(features, "imports_per_section") * (0.5f + executable_writable_ratio_f));
-        features["entropy_structure_risk"] = clamp01(0.45f * packed_sections_ratio_f + 0.25f * max_section_entropy_f +
-                                                     0.30f * get_or_zero(features, "overlay_entropy_weighted"));
+            clamp01(get_or_zero(features, "imports_per_section") *
+                    (0.5f + executable_writable_ratio_f));
+        features["entropy_structure_risk"] = clamp01(
+            0.45f * packed_sections_ratio_f + 0.25f * max_section_entropy_f +
+            0.30f * get_or_zero(features, "overlay_entropy_weighted"));
         features["security_mitigation_gap"] =
-            clamp01(((1.0f - has_nx_f) + (1.0f - has_aslr_f) + (1.0f - has_seh_f) + (1.0f - has_guard_cf_f)) * 0.25f);
+            clamp01(((1.0f - has_nx_f) + (1.0f - has_aslr_f) +
+                     (1.0f - has_seh_f) + (1.0f - has_guard_cf_f)) *
+                    0.25f);
         features["suspicious_import_mix"] =
-            clamp01(syscall_ratio_f + ordinal_ratio_f + 0.5f * get_or_zero(features, "api_behavior_mix_score") -
+            clamp01(syscall_ratio_f + ordinal_ratio_f +
+                    0.5f * get_or_zero(features, "api_behavior_mix_score") -
                     0.25f * imported_system_ratio_f);
         features["header_consistency_risk"] =
-            clamp01((checksum_zero_flag_f + entry_nonstandard_f + alignment_mismatch_ratio_f) / 3.0f);
+            clamp01((checksum_zero_flag_f + entry_nonstandard_f +
+                     alignment_mismatch_ratio_f) /
+                    3.0f);
         features["section_balance_risk"] =
-            clamp01(std::fabs(code_ratio_f - data_ratio_f) + rwx_sections_ratio_f + nonstandard_exec_ratio_f);
+            clamp01(std::fabs(code_ratio_f - data_ratio_f) +
+                    rwx_sections_ratio_f + nonstandard_exec_ratio_f);
         features["benign_metadata_score"] =
             clamp01(0.40f * has_signature_f + 0.35f * version_info_f +
-                    0.25f * (imported_system_ratio_f + (has_debug_info_f > 0.0f ? 1.0f : 0.0f)) * 0.5f);
+                    0.25f *
+                        (imported_system_ratio_f +
+                         (has_debug_info_f > 0.0f ? 1.0f : 0.0f)) *
+                        0.5f);
         features["packer_api_overlay_risk"] =
-            clamp01(0.40f * packed_sections_ratio_f + 0.25f * get_or_zero(features, "overlay_high_entropy_flag") +
+            clamp01(0.40f * packed_sections_ratio_f +
+                    0.25f * get_or_zero(features, "overlay_high_entropy_flag") +
                     0.35f * get_or_zero(features, "api_behavior_mix_score"));
-        float imports_density_f = safe_ratio(imports_count_f, get_or_zero(features, "size") / (1024.0f * 64.0f) + 1.0f);
+        float imports_density_f = safe_ratio(
+            imports_count_f,
+            get_or_zero(features, "size") / (1024.0f * 64.0f) + 1.0f);
         float unique_apis_f = get_or_zero(features, "unique_apis");
         float unique_imports_f = get_or_zero(features, "unique_imports");
-        float section_entropy_std_f = get_or_zero(features, "section_entropy_std");
+        float section_entropy_std_f =
+            get_or_zero(features, "section_entropy_std");
         float entry_point_ratio_f = get_or_zero(features, "entry_point_ratio");
-        float exports_name_ratio_f = get_or_zero(features, "exports_name_ratio");
-        float alignment_mismatch_count_f = get_or_zero(features, "alignment_mismatch_count");
-        float nonstandard_exec_count_ratio_f = safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f);
+        float exports_name_ratio_f =
+            get_or_zero(features, "exports_name_ratio");
+        float alignment_mismatch_count_f =
+            get_or_zero(features, "alignment_mismatch_count");
+        float nonstandard_exec_count_ratio_f =
+            safe_ratio(non_standard_exec_count_f, sections_count_f + 1.0f);
         float year_f = get_or_zero(features, "timestamp_year");
         float year_norm_f = clamp01((year_f - 1998.0f) / 30.0f);
-        float suspicious_core_f = clamp01(0.35f * get_or_zero(features, "suspicious_section_score") +
-                                          0.30f * get_or_zero(features, "suspicious_import_mix") +
-                                          0.35f * get_or_zero(features, "entropy_structure_risk"));
-        float benign_core_f = clamp01(0.60f * get_or_zero(features, "benign_metadata_score") +
-                                      0.25f * imported_system_ratio_f + 0.15f * exports_name_ratio_f);
+        float suspicious_core_f =
+            clamp01(0.35f * get_or_zero(features, "suspicious_section_score") +
+                    0.30f * get_or_zero(features, "suspicious_import_mix") +
+                    0.35f * get_or_zero(features, "entropy_structure_risk"));
+        float benign_core_f = clamp01(
+            0.60f * get_or_zero(features, "benign_metadata_score") +
+            0.25f * imported_system_ratio_f + 0.15f * exports_name_ratio_f);
         features["import_density_entropy_risk"] =
-            clamp01(clamp01(imports_density_f * 0.12f) * (0.50f + 0.50f * high_entropy_ratio_f));
+            clamp01(clamp01(imports_density_f * 0.12f) *
+                    (0.50f + 0.50f * high_entropy_ratio_f));
         features["api_uniqueness_gap"] =
-            clamp01(safe_ratio(unique_apis_f, unique_imports_f + 1.0f) * (0.50f + 0.50f * ordinal_ratio_f));
-        features["entry_section_anomaly_risk"] =
-            clamp01(entry_nonstandard_f * (0.50f + 0.50f * entry_point_ratio_f) + 0.20f * rwx_sections_ratio_f);
-        features["alignment_exec_compound_risk"] =
-            clamp01(safe_ratio(alignment_mismatch_count_f, sections_count_f + 1.0f) + nonstandard_exec_count_ratio_f);
+            clamp01(safe_ratio(unique_apis_f, unique_imports_f + 1.0f) *
+                    (0.50f + 0.50f * ordinal_ratio_f));
+        features["entry_section_anomaly_risk"] = clamp01(
+            entry_nonstandard_f * (0.50f + 0.50f * entry_point_ratio_f) +
+            0.20f * rwx_sections_ratio_f);
+        features["alignment_exec_compound_risk"] = clamp01(
+            safe_ratio(alignment_mismatch_count_f, sections_count_f + 1.0f) +
+            nonstandard_exec_count_ratio_f);
         features["timestamp_metadata_conflict"] =
-            clamp01((1.0f - year_norm_f) * (1.0f - has_signature_f) + checksum_zero_flag_f * 0.35f);
+            clamp01((1.0f - year_norm_f) * (1.0f - has_signature_f) +
+                    checksum_zero_flag_f * 0.35f);
         features["entropy_api_coupling"] =
-            clamp01(0.55f * section_entropy_std_f + 0.45f * get_or_zero(features, "api_behavior_mix_score"));
-        features["suspicious_vs_benign_margin"] = clamp01(suspicious_core_f - 0.35f * benign_core_f + 0.25f);
-        features["mitigation_import_conflict"] = clamp01(0.65f * get_or_zero(features, "security_mitigation_gap") +
-                                                         0.35f * get_or_zero(features, "suspicious_import_mix"));
+            clamp01(0.55f * section_entropy_std_f +
+                    0.45f * get_or_zero(features, "api_behavior_mix_score"));
+        features["suspicious_vs_benign_margin"] =
+            clamp01(suspicious_core_f - 0.35f * benign_core_f + 0.25f);
+        features["mitigation_import_conflict"] =
+            clamp01(0.65f * get_or_zero(features, "security_mitigation_gap") +
+                    0.35f * get_or_zero(features, "suspicious_import_mix"));
 
         return features;
-    } catch (...) { return features; }
+    } catch (...) {
+        return features;
+    }
 }
 
 static std::vector<std::string> build_feature_order() {
-    static const std::vector<std::string> BASE = {"size",
-                                                  "log_size",
-                                                  "sections_count",
-                                                  "symbols_count",
-                                                  "imports_count",
-                                                  "exports_count",
-                                                  "unique_imports",
-                                                  "unique_dlls",
-                                                  "unique_apis",
-                                                  "section_names_count",
-                                                  "section_total_size",
-                                                  "section_total_vsize",
-                                                  "avg_section_size",
-                                                  "avg_section_vsize",
-                                                  "section_entropy_avg",
-                                                  "section_entropy_min",
-                                                  "section_entropy_max",
-                                                  "section_entropy_std",
-                                                  "packed_sections_ratio",
-                                                  "subsystem",
-                                                  "dll_characteristics",
-                                                  "code_section_ratio",
-                                                  "data_section_ratio",
-                                                  "code_vsize_ratio",
-                                                  "data_vsize_ratio",
-                                                  "has_nx_compat",
-                                                  "has_aslr",
-                                                  "has_seh",
-                                                  "has_guard_cf",
-                                                  "has_resources",
-                                                  "has_debug_info",
-                                                  "has_tls",
-                                                  "has_relocs",
-                                                  "has_exceptions",
-                                                  "dll_name_avg_length",
-                                                  "dll_name_max_length",
-                                                  "dll_name_min_length",
-                                                  "section_name_avg_length",
-                                                  "section_name_max_length",
-                                                  "section_name_min_length",
-                                                  "export_name_avg_length",
-                                                  "export_name_max_length",
-                                                  "export_name_min_length",
-                                                  "max_section_size",
-                                                  "min_section_size",
-                                                  "long_sections_count",
-                                                  "short_sections_count",
-                                                  "section_size_std",
-                                                  "section_size_cv",
-                                                  "executable_writable_sections",
-                                                  "file_entropy_avg",
-                                                  "file_entropy_min",
-                                                  "file_entropy_max",
-                                                  "file_entropy_range",
-                                                  "zero_byte_ratio",
-                                                  "printable_byte_ratio",
-                                                  "trailing_data_size",
-                                                  "trailing_data_ratio",
-                                                  "imported_system_dlls_count",
-                                                  "exports_density",
-                                                  "has_large_trailing_data",
-                                                  "pe_header_size",
-                                                  "header_size_ratio",
-                                                  "file_entropy_std",
-                                                  "file_entropy_q25",
-                                                  "file_entropy_q75",
-                                                  "file_entropy_median",
-                                                  "high_entropy_ratio",
-                                                  "low_entropy_ratio",
-                                                  "entropy_change_rate",
-                                                  "entropy_change_std",
-                                                  "executable_sections_count",
-                                                  "writable_sections_count",
-                                                  "readable_sections_count",
-                                                  "executable_sections_ratio",
-                                                  "writable_sections_ratio",
-                                                  "readable_sections_ratio",
-                                                  "executable_code_density",
-                                                  "non_standard_executable_sections_count",
-                                                  "rwx_sections_count",
-                                                  "rwx_sections_ratio",
-                                                  "special_char_ratio",
-                                                  "long_sections_ratio",
-                                                  "short_sections_ratio",
-                                                  "dll_imports_entropy",
-                                                  "api_imports_entropy",
-                                                  "imported_system_dlls_ratio",
-                                                  "resources_count",
-                                                  "alignment_mismatch_count",
-                                                  "alignment_mismatch_ratio",
-                                                  "entry_point_ratio",
-                                                  "syscall_api_ratio",
-                                                  "import_ordinal_only_count",
-                                                  "import_ordinal_only_ratio",
-                                                  "avg_imports_per_dll",
-                                                  "exports_name_ratio",
-                                                  "entry_in_nonstandard_section_flag",
-                                                  "tls_callbacks_count",
-                                                  "reloc_blocks_count",
-                                                  "reloc_entries_count",
-                                                  "checksum_zero_flag",
-                                                  "api_network_ratio",
-                                                  "api_process_ratio",
-                                                  "api_filesystem_ratio",
-                                                  "api_registry_ratio",
-                                                  "overlay_entropy",
-                                                  "overlay_high_entropy_flag",
-                                                  "packer_keyword_hits_count",
-                                                  "packer_keyword_hits_ratio",
-                                                  "imports_per_section",
-                                                  "entropy_packed_interaction",
-                                                  "suspicious_section_score",
-                                                  "api_behavior_mix_score",
-                                                  "overlay_entropy_weighted",
-                                                  "import_execution_pressure",
-                                                  "entropy_structure_risk",
-                                                  "security_mitigation_gap",
-                                                  "suspicious_import_mix",
-                                                  "header_consistency_risk",
-                                                  "section_balance_risk",
-                                                  "benign_metadata_score",
-                                                  "packer_api_overlay_risk",
-                                                  "import_density_entropy_risk",
-                                                  "api_uniqueness_gap",
-                                                  "entry_section_anomaly_risk",
-                                                  "alignment_exec_compound_risk",
-                                                  "timestamp_metadata_conflict",
-                                                  "entropy_api_coupling",
-                                                  "suspicious_vs_benign_margin",
-                                                  "mitigation_import_conflict"};
+    static const std::vector<std::string> BASE = {
+        "size",
+        "log_size",
+        "sections_count",
+        "symbols_count",
+        "imports_count",
+        "exports_count",
+        "unique_imports",
+        "unique_dlls",
+        "unique_apis",
+        "section_names_count",
+        "section_total_size",
+        "section_total_vsize",
+        "avg_section_size",
+        "avg_section_vsize",
+        "section_entropy_avg",
+        "section_entropy_min",
+        "section_entropy_max",
+        "section_entropy_std",
+        "packed_sections_ratio",
+        "subsystem",
+        "dll_characteristics",
+        "code_section_ratio",
+        "data_section_ratio",
+        "code_vsize_ratio",
+        "data_vsize_ratio",
+        "has_nx_compat",
+        "has_aslr",
+        "has_seh",
+        "has_guard_cf",
+        "has_resources",
+        "has_debug_info",
+        "has_tls",
+        "has_relocs",
+        "has_exceptions",
+        "dll_name_avg_length",
+        "dll_name_max_length",
+        "dll_name_min_length",
+        "section_name_avg_length",
+        "section_name_max_length",
+        "section_name_min_length",
+        "export_name_avg_length",
+        "export_name_max_length",
+        "export_name_min_length",
+        "max_section_size",
+        "min_section_size",
+        "long_sections_count",
+        "short_sections_count",
+        "section_size_std",
+        "section_size_cv",
+        "executable_writable_sections",
+        "file_entropy_avg",
+        "file_entropy_min",
+        "file_entropy_max",
+        "file_entropy_range",
+        "zero_byte_ratio",
+        "printable_byte_ratio",
+        "trailing_data_size",
+        "trailing_data_ratio",
+        "imported_system_dlls_count",
+        "exports_density",
+        "has_large_trailing_data",
+        "pe_header_size",
+        "header_size_ratio",
+        "file_entropy_std",
+        "file_entropy_q25",
+        "file_entropy_q75",
+        "file_entropy_median",
+        "high_entropy_ratio",
+        "low_entropy_ratio",
+        "entropy_change_rate",
+        "entropy_change_std",
+        "executable_sections_count",
+        "writable_sections_count",
+        "readable_sections_count",
+        "executable_sections_ratio",
+        "writable_sections_ratio",
+        "readable_sections_ratio",
+        "executable_code_density",
+        "non_standard_executable_sections_count",
+        "rwx_sections_count",
+        "rwx_sections_ratio",
+        "special_char_ratio",
+        "long_sections_ratio",
+        "short_sections_ratio",
+        "dll_imports_entropy",
+        "api_imports_entropy",
+        "imported_system_dlls_ratio",
+        "resources_count",
+        "alignment_mismatch_count",
+        "alignment_mismatch_ratio",
+        "entry_point_ratio",
+        "syscall_api_ratio",
+        "import_ordinal_only_count",
+        "import_ordinal_only_ratio",
+        "avg_imports_per_dll",
+        "exports_name_ratio",
+        "entry_in_nonstandard_section_flag",
+        "tls_callbacks_count",
+        "reloc_blocks_count",
+        "reloc_entries_count",
+        "checksum_zero_flag",
+        "api_network_ratio",
+        "api_process_ratio",
+        "api_filesystem_ratio",
+        "api_registry_ratio",
+        "overlay_entropy",
+        "overlay_high_entropy_flag",
+        "packer_keyword_hits_count",
+        "packer_keyword_hits_ratio",
+        "imports_per_section",
+        "entropy_packed_interaction",
+        "suspicious_section_score",
+        "api_behavior_mix_score",
+        "overlay_entropy_weighted",
+        "import_execution_pressure",
+        "entropy_structure_risk",
+        "security_mitigation_gap",
+        "suspicious_import_mix",
+        "header_consistency_risk",
+        "section_balance_risk",
+        "benign_metadata_score",
+        "packer_api_overlay_risk",
+        "import_density_entropy_risk",
+        "api_uniqueness_gap",
+        "entry_section_anomaly_risk",
+        "alignment_exec_compound_risk",
+        "timestamp_metadata_conflict",
+        "entropy_api_coupling",
+        "suspicious_vs_benign_margin",
+        "mitigation_import_conflict"};
 
     std::vector<std::string> order = BASE;
     order.reserve(1500);
-    for (const char* sec : COMMON_SECTIONS) { order.emplace_back(std::string("has_") + sec + "_section"); }
-    order.insert(order.end(), {"has_signature", "signature_size", "signature_has_signing_time", "version_info_present",
-                               "company_name_len", "product_name_len", "file_version_len", "original_filename_len",
-                               "has_upx_section", "has_mpress_section", "has_aspack_section", "has_themida_section",
-                               "timestamp", "timestamp_year"});
+    for (const char* sec : COMMON_SECTIONS) {
+        order.emplace_back(std::string("has_") + sec + "_section");
+    }
+    order.insert(
+        order.end(),
+        {"has_signature", "signature_size", "signature_has_signing_time",
+         "version_info_present", "company_name_len", "product_name_len",
+         "file_version_len", "original_filename_len", "has_upx_section",
+         "has_mpress_section", "has_aspack_section", "has_themida_section",
+         "timestamp", "timestamp_year"});
     return order;
 }
 
-std::vector<float> extract_combined_pe_features_from_path(const std::string& path,
-                                                          const std::optional<std::string>& allowed_root) {
+std::vector<float> extract_combined_pe_features_from_path(
+    const std::string& path, const std::optional<std::string>& allowed_root) {
     auto valid = validate_path(path, allowed_root);
-    if (!valid) { return {}; }
+    if (!valid) {
+        return {};
+    }
     std::vector<std::uint8_t> data;
-    if (!read_file_bytes(*valid, data)) { return {}; }
+    if (!read_file_bytes(*valid, data)) {
+        return {};
+    }
     std::unique_ptr<LIEF::PE::Binary> bin;
     try {
         bin = LIEF::PE::Parser::parse(std::move(data));
-    } catch (...) { return {}; }
-    if (!bin) { return {}; }
+    } catch (...) {
+        return {};
+    }
+    if (!bin) {
+        return {};
+    }
 
-    std::unordered_map<std::string, float> all_features = extract_file_attributes(*valid, allowed_root);
+    std::unordered_map<std::string, float> all_features =
+        extract_file_attributes(*valid, allowed_root);
     auto enh = extract_enhanced_pe_features(*valid, *bin);
     for (auto& kv : enh) all_features[kv.first] = kv.second;
 
@@ -1211,17 +1444,23 @@ std::vector<float> extract_combined_pe_features_from_path(const std::string& pat
     }
 
     for (std::size_t i = 0; i < LIGHTWEIGHT_FEATURE_DIM; ++i) {
-        if (removed_indices.find(i) != removed_indices.end()) { continue; }
+        if (removed_indices.find(i) != removed_indices.end()) {
+            continue;
+        }
         combined[i] = lw[i] * LIGHTWEIGHT_FEATURE_SCALE;
     }
 
     auto order = build_feature_order();
-    float log_size_norm = static_cast<float>(std::log(static_cast<double>(SIZE_NORM_MAX)));
+    float log_size_norm =
+        static_cast<float>(std::log(static_cast<double>(SIZE_NORM_MAX)));
 
     std::size_t base_offset = LIGHTWEIGHT_FEATURE_DIM;
-    for (std::size_t i = 0; i < order.size() && base_offset + i < PE_FEATURE_VECTOR_DIM; ++i) {
+    for (std::size_t i = 0;
+         i < order.size() && base_offset + i < PE_FEATURE_VECTOR_DIM; ++i) {
         std::size_t pe_idx = base_offset + i;
-        if (removed_indices.find(pe_idx) != removed_indices.end()) { continue; }
+        if (removed_indices.find(pe_idx) != removed_indices.end()) {
+            continue;
+        }
         const std::string& key = order[i];
         float v = 0.0f;
         auto it = all_features.find(key);
@@ -1236,7 +1475,8 @@ std::vector<float> extract_combined_pe_features_from_path(const std::string& pat
         } else if (key == "timestamp") {
             v = v / TIMESTAMP_MAX;
         } else if (key == "timestamp_year") {
-            v = (v - TIMESTAMP_YEAR_BASE) / (TIMESTAMP_YEAR_MAX - TIMESTAMP_YEAR_BASE);
+            v = (v - TIMESTAMP_YEAR_BASE) /
+                (TIMESTAMP_YEAR_MAX - TIMESTAMP_YEAR_BASE);
         } else if (key.rfind("has_", 0) == 0) {
             v = v > 0.0f ? 1.0f : 0.0f;
         }
@@ -1247,7 +1487,8 @@ std::vector<float> extract_combined_pe_features_from_path(const std::string& pat
 
     l2_normalize(combined);
     assert(combined.size() == PE_FEATURE_VECTOR_DIM &&
-           "extract_combined_pe_features_from_path: feature vector dimension mismatch");
+           "extract_combined_pe_features_from_path: feature vector dimension "
+           "mismatch");
     return combined;
 }
 
@@ -1272,18 +1513,28 @@ std::optional<std::size_t> pe_feature_index(const std::string& name) {
 std::optional<std::vector<std::string>> extract_import_sequence_from_path(
     const std::string& path, const std::optional<std::string>& allowed_root) {
     auto valid = validate_path(path, allowed_root);
-    if (!valid) { return std::nullopt; }
+    if (!valid) {
+        return std::nullopt;
+    }
 
     std::vector<std::uint8_t> data;
-    if (!read_file_bytes(*valid, data)) { return std::nullopt; }
+    if (!read_file_bytes(*valid, data)) {
+        return std::nullopt;
+    }
     std::unique_ptr<LIEF::PE::Binary> bin;
     try {
         bin = LIEF::PE::Parser::parse(std::move(data));
-    } catch (...) { return std::nullopt; }
-    if (!bin) { return std::nullopt; }
+    } catch (...) {
+        return std::nullopt;
+    }
+    if (!bin) {
+        return std::nullopt;
+    }
 
     std::vector<std::string> seq;
-    if (!bin->has_imports()) { return seq; }
+    if (!bin->has_imports()) {
+        return seq;
+    }
     for (const LIEF::PE::Import& imp : bin->imports()) {
         std::string dll = lower_ascii(imp.name());
         for (const LIEF::PE::ImportEntry& e : imp.entries()) {

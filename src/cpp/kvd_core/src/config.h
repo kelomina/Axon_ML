@@ -21,10 +21,14 @@
 
 namespace kvd {
 
-Config config_from_api(const char* model_path, const char* model_normal_path, const char* model_packed_path,
-                       const char* family_classifier_json_path, const char* allowed_scan_root,
-                       unsigned int max_file_size, float prediction_threshold, const char* onnx_model_path = nullptr,
-                       const char* onnx_model_normal_path = nullptr, const char* onnx_model_packed_path = nullptr);
+Config config_from_api(const char* model_path, const char* model_normal_path,
+                       const char* model_packed_path,
+                       const char* family_classifier_json_path,
+                       const char* allowed_scan_root,
+                       unsigned int max_file_size, float prediction_threshold,
+                       const char* onnx_model_path = nullptr,
+                       const char* onnx_model_normal_path = nullptr,
+                       const char* onnx_model_packed_path = nullptr);
 
 std::optional<std::string> getenv_string(const char* name);
 

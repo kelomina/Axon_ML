@@ -24,7 +24,9 @@ static std::filesystem::path find_repo_root() {
     if (ec) return {};
     for (int i = 0; i < 8; ++i) {
         auto candidate = p / "saved_models" / "lightgbm_model.txt";
-        if (std::filesystem::exists(candidate, ec) && !ec) { return p; }
+        if (std::filesystem::exists(candidate, ec) && !ec) {
+            return p;
+        }
         if (!p.has_parent_path()) break;
         p = p.parent_path();
     }
@@ -35,7 +37,8 @@ TEST(KvdSmokeTest, CreateWithModelPath) {
     auto root = find_repo_root();
     ASSERT_FALSE(root.empty());
     auto model_path = (root / "saved_models" / "lightgbm_model.txt").string();
-    auto family_path = (root / "hdbscan_cluster_results" / "family_classifier.json").string();
+    auto family_path =
+        (root / "hdbscan_cluster_results" / "family_classifier.json").string();
     kvd_config cfg{};
     cfg.model_path = model_path.c_str();
     if (std::filesystem::exists(std::filesystem::path(family_path))) {
@@ -68,7 +71,8 @@ TEST(KvdSmokeTest, ScanPathOnCurrentExe) {
     auto root = find_repo_root();
     ASSERT_FALSE(root.empty());
     auto model_path = (root / "saved_models" / "lightgbm_model.txt").string();
-    auto family_path = (root / "hdbscan_cluster_results" / "family_classifier.json").string();
+    auto family_path =
+        (root / "hdbscan_cluster_results" / "family_classifier.json").string();
 
     kvd_config cfg{};
     cfg.model_path = model_path.c_str();
@@ -119,7 +123,8 @@ TEST(KvdSmokeTest, ScanPathMultithread) {
     auto root = find_repo_root();
     ASSERT_FALSE(root.empty());
     auto model_path = (root / "saved_models" / "lightgbm_model.txt").string();
-    auto family_path = (root / "hdbscan_cluster_results" / "family_classifier.json").string();
+    auto family_path =
+        (root / "hdbscan_cluster_results" / "family_classifier.json").string();
 
     kvd_config cfg{};
     cfg.model_path = model_path.c_str();
@@ -143,21 +148,27 @@ TEST(KvdSmokeTest, ScanPathMultithread) {
             char* out_json = nullptr;
             size_t out_len = 0;
             int rc = kvd_scan_path(h, target.c_str(), &out_json, &out_len);
-            if (rc == 0 && out_json) { kvd_free(out_json); }
+            if (rc == 0 && out_json) {
+                kvd_free(out_json);
+            }
             results[index] = rc;
         });
     }
-    for (auto& t : threads) { t.join(); }
+    for (auto& t : threads) {
+        t.join();
+    }
     kvd_destroy(h);
 
-    for (int rc : results) { EXPECT_EQ(rc, 0); }
+    for (int rc : results) {
+        EXPECT_EQ(rc, 0);
+    }
 }
 
 TEST(KvdSmokeTest, BoundaryConditions) {
     kvd_config cfg{};
     cfg.model_path = "non_existent_model_path.txt";
     cfg.max_file_size = 1;
-    cfg.prediction_threshold = 2.0f; // invalid threshold
+    cfg.prediction_threshold = 2.0f;  // invalid threshold
 
     kvd_handle* h = kvd_create(&cfg);
     EXPECT_EQ(h, nullptr);
@@ -170,4 +181,3 @@ TEST(KvdSmokeTest, BoundaryConditions) {
         kvd_free(out_error);
     }
 }
-

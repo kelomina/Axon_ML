@@ -21,18 +21,27 @@
 
 namespace kvd {
 
-static constexpr const char* ENV_LIGHTGBM_MODEL_PATH = "SCANNER_LIGHTGBM_MODEL_PATH";
-static constexpr const char* ENV_LIGHTGBM_MODEL_NORMAL_PATH = "SCANNER_LIGHTGBM_MODEL_NORMAL_PATH";
-static constexpr const char* ENV_LIGHTGBM_MODEL_PACKED_PATH = "SCANNER_LIGHTGBM_MODEL_PACKED_PATH";
-static constexpr const char* ENV_FAMILY_CLASSIFIER_PATH = "SCANNER_FAMILY_CLASSIFIER_PATH";
-static constexpr const char* ENV_HARDCASE_MANIFEST_PATH = "SCANNER_HARDCASE_MANIFEST_PATH";
-static constexpr const char* ENV_ALLOWED_SCAN_ROOT = "SCANNER_ALLOWED_SCAN_ROOT";
+static constexpr const char* ENV_LIGHTGBM_MODEL_PATH =
+    "SCANNER_LIGHTGBM_MODEL_PATH";
+static constexpr const char* ENV_LIGHTGBM_MODEL_NORMAL_PATH =
+    "SCANNER_LIGHTGBM_MODEL_NORMAL_PATH";
+static constexpr const char* ENV_LIGHTGBM_MODEL_PACKED_PATH =
+    "SCANNER_LIGHTGBM_MODEL_PACKED_PATH";
+static constexpr const char* ENV_FAMILY_CLASSIFIER_PATH =
+    "SCANNER_FAMILY_CLASSIFIER_PATH";
+static constexpr const char* ENV_HARDCASE_MANIFEST_PATH =
+    "SCANNER_HARDCASE_MANIFEST_PATH";
+static constexpr const char* ENV_ALLOWED_SCAN_ROOT =
+    "SCANNER_ALLOWED_SCAN_ROOT";
 static constexpr const char* ENV_MAX_FILE_SIZE = "SCANNER_MAX_FILE_SIZE";
-static constexpr const char* ENV_PREDICTION_THRESHOLD = "SCANNER_PREDICTION_THRESHOLD";
+static constexpr const char* ENV_PREDICTION_THRESHOLD =
+    "SCANNER_PREDICTION_THRESHOLD";
 
 std::optional<std::string> getenv_string(const char* name) {
     const char* v = std::getenv(name);
-    if (!v || !*v) { return std::nullopt; }
+    if (!v || !*v) {
+        return std::nullopt;
+    }
     return std::string(v);
 }
 
@@ -40,7 +49,9 @@ static bool path_exists(const std::string& path) {
     if (path.empty()) return false;
     std::error_code ec;
     auto fs_path = to_filesystem_path(path);
-    if (!fs_path) { return false; }
+    if (!fs_path) {
+        return false;
+    }
     return std::filesystem::exists(*fs_path, ec) && !ec;
 }
 
@@ -60,22 +71,32 @@ static std::optional<float> parse_float(const std::string& s) {
     return v;
 }
 
-Config config_from_api(const char* model_path, const char* model_normal_path, const char* model_packed_path,
-                       const char* family_classifier_json_path, const char* allowed_scan_root,
-                       unsigned int max_file_size, float prediction_threshold, const char* onnx_model_path,
-                       const char* onnx_model_normal_path, const char* onnx_model_packed_path) {
+Config config_from_api(const char* model_path, const char* model_normal_path,
+                       const char* model_packed_path,
+                       const char* family_classifier_json_path,
+                       const char* allowed_scan_root,
+                       unsigned int max_file_size, float prediction_threshold,
+                       const char* onnx_model_path,
+                       const char* onnx_model_normal_path,
+                       const char* onnx_model_packed_path) {
     Config cfg;
     if (model_path && *model_path) cfg.model_path = model_path;
     if (model_normal_path) cfg.model_normal_path = model_normal_path;
     if (model_packed_path) cfg.model_packed_path = model_packed_path;
     if (family_classifier_json_path && *family_classifier_json_path)
         cfg.family_classifier_json_path = family_classifier_json_path;
-    if (allowed_scan_root && *allowed_scan_root) cfg.allowed_scan_root = std::string(allowed_scan_root);
-    if (max_file_size > 0) cfg.max_file_size = static_cast<std::size_t>(max_file_size);
-    if (prediction_threshold > 0.0f && prediction_threshold <= 1.0f) cfg.prediction_threshold = prediction_threshold;
-    if (onnx_model_path && *onnx_model_path) cfg.onnx_model_path = onnx_model_path;
-    if (onnx_model_normal_path && *onnx_model_normal_path) cfg.onnx_model_normal_path = onnx_model_normal_path;
-    if (onnx_model_packed_path && *onnx_model_packed_path) cfg.onnx_model_packed_path = onnx_model_packed_path;
+    if (allowed_scan_root && *allowed_scan_root)
+        cfg.allowed_scan_root = std::string(allowed_scan_root);
+    if (max_file_size > 0)
+        cfg.max_file_size = static_cast<std::size_t>(max_file_size);
+    if (prediction_threshold > 0.0f && prediction_threshold <= 1.0f)
+        cfg.prediction_threshold = prediction_threshold;
+    if (onnx_model_path && *onnx_model_path)
+        cfg.onnx_model_path = onnx_model_path;
+    if (onnx_model_normal_path && *onnx_model_normal_path)
+        cfg.onnx_model_normal_path = onnx_model_normal_path;
+    if (onnx_model_packed_path && *onnx_model_packed_path)
+        cfg.onnx_model_packed_path = onnx_model_packed_path;
 
     if (cfg.model_path.empty()) {
         auto env_model = getenv_string(ENV_LIGHTGBM_MODEL_PATH);
@@ -123,46 +144,77 @@ Config config_from_api(const char* model_path, const char* model_normal_path, co
     }
 
     if (cfg.model_path.empty()) {
-        std::string default_model = (std::filesystem::path("saved_models") / "lightgbm_model.txt").string();
-        if (path_exists(default_model)) { cfg.model_path = default_model; }
+        std::string default_model =
+            (std::filesystem::path("saved_models") / "lightgbm_model.txt")
+                .string();
+        if (path_exists(default_model)) {
+            cfg.model_path = default_model;
+        }
     }
 
     if (cfg.model_normal_path.empty()) {
         std::string default_model_normal =
-            (std::filesystem::path("saved_models") / "lightgbm_model_normal.txt").string();
-        if (path_exists(default_model_normal)) { cfg.model_normal_path = default_model_normal; }
+            (std::filesystem::path("saved_models") /
+             "lightgbm_model_normal.txt")
+                .string();
+        if (path_exists(default_model_normal)) {
+            cfg.model_normal_path = default_model_normal;
+        }
     }
 
     if (cfg.model_packed_path.empty()) {
         std::string default_model_packed =
-            (std::filesystem::path("saved_models") / "lightgbm_model_packed.txt").string();
-        if (path_exists(default_model_packed)) { cfg.model_packed_path = default_model_packed; }
+            (std::filesystem::path("saved_models") /
+             "lightgbm_model_packed.txt")
+                .string();
+        if (path_exists(default_model_packed)) {
+            cfg.model_packed_path = default_model_packed;
+        }
     }
 
     if (cfg.family_classifier_json_path.empty()) {
-        std::string default_fc = (std::filesystem::path("hdbscan_cluster_results") / "family_classifier.json").string();
-        if (path_exists(default_fc)) { cfg.family_classifier_json_path = default_fc; }
+        std::string default_fc =
+            (std::filesystem::path("hdbscan_cluster_results") /
+             "family_classifier.json")
+                .string();
+        if (path_exists(default_fc)) {
+            cfg.family_classifier_json_path = default_fc;
+        }
     }
     if (cfg.hardcase_manifest_path.empty()) {
         std::string default_hardcase =
-            (std::filesystem::path("resources") / "weights_cluster_eval" / "weights" / "hardcase_cxx_manifest.json")
+            (std::filesystem::path("resources") / "weights_cluster_eval" /
+             "weights" / "hardcase_cxx_manifest.json")
                 .string();
-        if (path_exists(default_hardcase)) { cfg.hardcase_manifest_path = default_hardcase; }
+        if (path_exists(default_hardcase)) {
+            cfg.hardcase_manifest_path = default_hardcase;
+        }
     }
 
     if (cfg.onnx_model_path.empty()) {
-        std::string default_onnx = (std::filesystem::path("saved_models") / "model.onnx").string();
-        if (path_exists(default_onnx)) { cfg.onnx_model_path = default_onnx; }
+        std::string default_onnx =
+            (std::filesystem::path("saved_models") / "model.onnx").string();
+        if (path_exists(default_onnx)) {
+            cfg.onnx_model_path = default_onnx;
+        }
     }
 
     if (cfg.onnx_model_normal_path.empty()) {
-        std::string default_onnx_normal = (std::filesystem::path("saved_models") / "model_normal.onnx").string();
-        if (path_exists(default_onnx_normal)) { cfg.onnx_model_normal_path = default_onnx_normal; }
+        std::string default_onnx_normal =
+            (std::filesystem::path("saved_models") / "model_normal.onnx")
+                .string();
+        if (path_exists(default_onnx_normal)) {
+            cfg.onnx_model_normal_path = default_onnx_normal;
+        }
     }
 
     if (cfg.onnx_model_packed_path.empty()) {
-        std::string default_onnx_packed = (std::filesystem::path("saved_models") / "model_packed.onnx").string();
-        if (path_exists(default_onnx_packed)) { cfg.onnx_model_packed_path = default_onnx_packed; }
+        std::string default_onnx_packed =
+            (std::filesystem::path("saved_models") / "model_packed.onnx")
+                .string();
+        if (path_exists(default_onnx_packed)) {
+            cfg.onnx_model_packed_path = default_onnx_packed;
+        }
     }
 
     return cfg;
